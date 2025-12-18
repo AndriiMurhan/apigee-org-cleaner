@@ -1,6 +1,7 @@
 import requests
 import json
 import zipfile
+import time
 import xml.etree.ElementTree as ET
 from auth2 import Auth2Token
 from request import RestRequest
@@ -13,13 +14,23 @@ class ExtracterApigeeResources():
         self.organization = organization
     def get_last_number_deployed_revision_proxy(self, name_proxy):
         response = self.request.get(f"{self.main_url}{self.organization}/apis/{name_proxy}/deployments")
-        if (len(json.loads(response.text)) > 0 ):
+        if (len(json.loads(response.text)) > 0):
             revisions = json.loads(response.text)["deployments"] # get all deployed revisions
             list_revisions = []
             for revision in revisions:
                 list_revisions.append(int(revision['revision']))
             final_revision = max(list_revisions)
             return final_revision
+        else:
+            return -1
+    def get_deployed_revisions_proxy(self, name_proxy):
+        response = self.request.get(f"{self.main_url}{self.organization}/apis/{name_proxy}/deployments")
+        if (len(json.loads(response.text)) > 0):
+            revisions = json.loads(response.text)["deployments"] # get all deployed revisions
+            list_revisions = []
+            for revision in revisions:
+                list_revisions.append(int(revision['revision']))
+            return list_revisions
         else:
             return -1
     def download_file(self,url):
@@ -56,25 +67,80 @@ class ExtracterApigeeResources():
             record = {}
             record["type"] = "proxy"
             record["name"] = proxy["name"]
-            revision = self.get_last_number_deployed_revision_proxy(proxy["name"])
-            if revision == -1:
+            record["revisions"] = {}
+            revisions = self.get_deployed_revisions_proxy(proxy["name"])
+            if revisions == -1:
                 resp = json.loads(self.request.get(f"{self.main_url}{self.organization}/apis/{proxy["name"]}",).text)
-                revision = resp["latestRevisionId"]
-            url = f"{self.main_url}{self.organization}/apis/{proxy["name"]}/revisions/{revision}?format=bundle"
-            list_sharedflow = self.get_sharedflows(url)
-            record["sharedflow"] = list_sharedflow
+                revisions = [resp["latestRevisionId"]]
+            for revision in revisions:
+                revision_dependency = {}
+                url = f"{self.main_url}{self.organization}/apis/{proxy["name"]}/revisions/{revision}?format=bundle"
+                list_sharedflow = self.get_sharedflows(url)
+                revision_dependency["sharedflow"] = list_sharedflow
+                record["revisions"][f"{revision}"] = revision_dependency
             response.append(record)
-            if len(response) == 20:
-                break
-        with open("result.json", "w") as result:
-            result.write(json.dumps(response))
+        print(f"Total proxy extracted: {len(response)}")
+        with open("proxy.json", "w", encoding="utf-8") as proxyfile:
+            json.dump(response, proxyfile, ensure_ascii=False, indent=4)
         print("proxy was done")
+        return response
+    def get_organization(self):
+        response = self.request.get(f"{self.main_url}{self.organization}")
+        return response.json()
+    def get_kvms_organization(self):
+        response = self.request.get(f"{self.main_url}{self.organization}/keyvaluemaps")
+        return response.json()
+    def get_kvms_environment(self, environment):
+        response = self.request.get(f"{self.main_url}{self.organization}/environments/{environment}/keyvaluemaps")
+        return response.json()
+    def get_kvms_proxy(self, proxy):
+        response = self.request.get(f"{self.main_url}{self.organization}/apis/{proxy}/keyvaluemaps")
+        return response.json()
+    def get_sharedflows_list(self):
+        sharedflows = []
+        response = self.request.get(f"{self.main_url}{self.organization}/sharedflows")
+        for sharedflow in response.json()['sharedFlows']:
+            sharedflows.append(sharedflow["name"])
+        return sharedflows
+    def get_apiproducts(self):
+        apiproducts = []
+        response = self.request.get(f"{self.main_url}{self.organization}/apiproducts")
+        apiproducts = response.json()['apiProduct']
+        for apiproduct in apiproducts:
+            apiproduct["proxy"] = [] 
+            details_apiproduct = self.request.get(f"{self.main_url}{self.organization}/apiproducts/{apiproduct["name"]}").json()
+            if "operationGroup" in details_apiproduct:
+                if "operationConfigs" in details_apiproduct["operationGroup"]:
+                    details = details_apiproduct["operationGroup"]["operationConfigs"]
+                    proxy = []
+                    for detail in details:
+                        proxy.append(detail['apiSource'])
+                    apiproduct["proxy"] = proxy
+            if "proxies" in details_apiproduct:
+                apiproduct["proxy"] = details_apiproduct["proxies"]
+        return apiproducts
+    def build_hierarchy(self):
+        structure = {}
+        organization = self.get_organization()
+        structure["organization_name"] = organization["name"]
+        structure["organization_kvm"] = self.get_kvms_organization()
+        structure["environments"] = [{"name": env, "kvm": self.get_kvms_environment(env)} 
+                                     for env in organization["environments"]]
+        structure["sharedflow"] = [{"name": sharedflow, "proxy": []} for sharedflow in self.get_sharedflows_list()]
+        structure["proxy"] = [proxy for proxy in self.get_proxies()]
+        return structure
     def get_proxy(self,name,includeRevisions=False,includeMetaData=False):
         response = self.request.get(f"{self.main_url}{self.organization}/apis/{name}")
         proxies_json = json.loads(response.text)
         return proxies_json
 if __name__ == "__main__":
+   start = time.time()
    extracter = ExtracterApigeeResources()
-   data1 = extracter.get_proxies(includeRevisions=True)
-
+   data1 = extracter.get_apiproducts()
+   end = time.time()
+   print(data1)
+   print(f"Length: {len(data1)}")
+   print("Time: %d", end-start)
+#    with open("result.json", "w") as f:
+#         f.write(json.dumps(data1))
 
