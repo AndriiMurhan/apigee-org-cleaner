@@ -119,6 +119,20 @@ class ExtracterApigeeResources():
             if "proxies" in details_apiproduct:
                 apiproduct["proxy"] = details_apiproduct["proxies"]
         return apiproducts
+    def get_apps(self):
+        response = self.request.get(f"{self.main_url}{self.organization}/apps?expand=true")
+        apps = response.json()['app']
+        new_format_apps = []
+        for app in apps:
+            record = {}
+            record["name"] = app["name"]
+            apiproducts = []
+            if 'apiProducts' in app["credentials"][0]:
+                for apiproduct in app["credentials"][0]['apiProducts']:
+                    apiproducts.append(apiproduct['apiproduct'])
+            record["apiproduct"] = apiproducts
+            new_format_apps.append(record)
+        return new_format_apps
     def build_hierarchy(self):
         structure = {}
         organization = self.get_organization()
@@ -127,7 +141,16 @@ class ExtracterApigeeResources():
         structure["environments"] = [{"name": env, "kvm": self.get_kvms_environment(env)} 
                                      for env in organization["environments"]]
         structure["sharedflow"] = [{"name": sharedflow, "proxy": []} for sharedflow in self.get_sharedflows_list()]
-        structure["proxy"] = [proxy for proxy in self.get_proxies()]
+        structure["proxy"] = self.get_proxies()
+        structure["apiproduct"] = self.get_apiproducts()
+        structure["app"] = self.get_apps()
+        for apiproduct in structure["apiproduct"]: # find depedency between apiproduct and proxy
+            for proxy in apiproduct["proxy"]:
+                for prox in structure["proxy"]:
+                    if prox["name"] == proxy:
+                       prox["apiproduct"] = proxy
+        with open("hierarchy.json", "w", encoding="utf-8") as hierarchy:
+            json.dump(structure, hierarchy, ensure_ascii=False, indent=4)
         return structure
     def get_proxy(self,name,includeRevisions=False,includeMetaData=False):
         response = self.request.get(f"{self.main_url}{self.organization}/apis/{name}")
@@ -136,7 +159,7 @@ class ExtracterApigeeResources():
 if __name__ == "__main__":
    start = time.time()
    extracter = ExtracterApigeeResources()
-   data1 = extracter.get_apiproducts()
+   data1 = extracter.get_apps()
    end = time.time()
    print(data1)
    print(f"Length: {len(data1)}")
