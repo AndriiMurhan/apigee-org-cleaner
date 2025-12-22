@@ -52,13 +52,34 @@ class ExtracterApigeeResources():
                 if "apiproxy/policies/" in list_names:
                     list_names.remove("apiproxy/policies/")
                     policy_list = [str(object).removeprefix("apiproxy/policies/") for object in list_names]
-                    flowcallout_list = [policy for policy in policy_list if "FC-" in policy]
+                    flowcallout_list = self.filterpolicyBySharedflow(policy_list)
                     if len(flowcallout_list) > 0:
                         for flowcallout in flowcallout_list:
                             with arhive.open("apiproxy/policies/"+flowcallout) as myfile:
                                 root_element = ET.fromstring(myfile.read())
                                 for sharedflow in root_element.findall('SharedFlowBundle'): 
                                     sharedflows.append(sharedflow.text)
+        return sharedflows
+    def filterpolicyBySharedflow(self, policies):
+        acronyms = ["AC-","AM-","AE-",
+                    "BA-","CRL-","EV-",
+                    "JS-","JC-", "JTP-", 
+                    "J2X-", "JtoX-", "KVM-",
+                    "LDAP-","ML-","PC-",
+                    "LC-","IC-", "SA-", 
+                    "QZ-", "VC-", "RC-",
+                    "OAuthv1-", "OAuthv2-","Python-", 
+                    "Q-", "RQ-", "RF-",
+                    "RE-", "MV-", "SAML-",
+                    "EC-", "JWT-", "JWS-",
+                    "SC-", "SA-","Stats-",
+                    "VAK-", "XMLTP-", "X2J-",
+                    "XSL-"]
+        sharedflows = []
+        for policy in policies:
+            structure_policy = str(policy).split("-")
+            if f"{structure_policy[0]}-" not in acronyms:
+                sharedflows.append(policy)
         return sharedflows
     def get_proxies(self,includeRevisions=False,includeMetaData=False):
         response = []
@@ -200,7 +221,7 @@ class ExtracterApigeeResources():
 if __name__ == "__main__":
    start = time.time()
    extracter = ExtracterApigeeResources()
-   data1 = extracter.get_sharedflows_list()
+   data1 = extracter.filterpolicyBySharedflow(["FC-reerjerje", "SC-АРворар","SF-Authorization"])
    end = time.time()
    print(data1)
    print(f"Length: {len(data1)}")
