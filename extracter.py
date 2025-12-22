@@ -99,6 +99,7 @@ class ExtracterApigeeResources():
                 list_sharedflow = self.get_sharedflows(url)
                 revision_dependency["sharedflow"] = list_sharedflow
                 record["revisions"][f"{revision}"] = revision_dependency
+            record["kvms"] = self.get_kvms_proxy(proxy["name"])
             response.append(record)
         print(f"Total proxy extracted: {len(response)}")
         with open("proxy.json", "w", encoding="utf-8") as proxyfile:
@@ -124,6 +125,7 @@ class ExtracterApigeeResources():
             record = {}
             record["name"] = sharedflow["name"]
             record["revisions"] = {}
+            record["proxy"] = []
             revisions = self.get_sharedflow_deployments(sharedflow["name"])
             for revision in revisions:
                 numberRevision = revision["revision"]
@@ -183,6 +185,24 @@ class ExtracterApigeeResources():
             record["app"] = apps
             new_format_developers.append(record)
         return new_format_developers
+    def get_flowhooks(self, env):
+        response = self.request.get(f"{self.main_url}{self.organization}/environments/{env}/flowhooks").json()
+        flowhooks = []
+        for flowhook in response:
+            fh = {}
+            response_flowhook = self.request.get(f"{self.main_url}{self.organization}/environments/{env}/flowhooks/{flowhook}").json()
+            fh["name"] = flowhook
+            fh["sharedflow"] = ""
+            if "sharedflow" in response_flowhook:
+                fh["sharedflow"] = response_flowhook["sharedFlow"] 
+            flowhooks.append(fh)
+        return flowhooks
+    def get_keystores(self, env):
+        response = self.request.get(f"{self.main_url}{self.organization}/environments/{env}/keystores").json()
+        return response
+    def get_caches(self,env):
+        response = self.request.get(f"{self.main_url}{self.organization}/environments/{env}/caches").json()
+        return response
     def build_hierarchy(self):
         structure = {}
         organization = self.get_organization()
@@ -190,11 +210,18 @@ class ExtracterApigeeResources():
         structure["organization_kvm"] = self.get_kvms_organization()
         structure["environments"] = [{"name": env, "kvm": self.get_kvms_environment(env)} 
                                      for env in organization["environments"]]
-        structure["sharedflow"] = [{"name": sharedflow, "proxy": []} for sharedflow in self.get_sharedflows_list()]
+        structure["sharedflow"] = self.get_sharedflows_list()
         structure["proxy"] = self.get_proxies()
         structure["apiproduct"] = self.get_apiproducts()
         structure["app"] = self.get_apps()
         structure["developers"] = self.get_developers()
+
+        for proxy in structure["proxy"]: # find depedency between proxy and sharedflow
+            for key, value in dict(proxy["revisions"]).items():
+                for sharedfl in value["sharedflow"]:
+                    for sharedflow in structure["sharedflow"]:
+                        if sharedfl == sharedflow["name"]:
+                            list(sharedflow["proxy"]).append(proxy["name"])
         for apiproduct in structure["apiproduct"]: # find depedency between apiproduct and proxy
             for proxy in apiproduct["proxy"]:
                 for prox in structure["proxy"]:
@@ -211,6 +238,8 @@ class ExtracterApigeeResources():
                     if App["name"] == app:
                        App["developer"] = developer["email"]
         
+        
+        
         with open("hierarchy.json", "w", encoding="utf-8") as hierarchy:
             json.dump(structure, hierarchy, ensure_ascii=False, indent=4)
         return structure
@@ -221,7 +250,7 @@ class ExtracterApigeeResources():
 if __name__ == "__main__":
    start = time.time()
    extracter = ExtracterApigeeResources()
-   data1 = extracter.filterpolicyBySharedflow(["FC-reerjerje", "SC-АРворар","SF-Authorization"])
+   data1 = extracter.get_caches("default-test")
    end = time.time()
    print(data1)
    print(f"Length: {len(data1)}")
