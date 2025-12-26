@@ -29,7 +29,10 @@ class ExtracterApigeeResources():
             revisions = json.loads(response.text)["deployments"] # get all deployed revisions
             list_revisions = []
             for revision in revisions:
-                list_revisions.append(int(revision['revision']))
+                record = {}
+                record["revision"] = int(revision['revision'])
+                record["environment"] = revision["environment"]
+                list_revisions.append(record)
             return list_revisions
         else:
             return -1
@@ -74,7 +77,7 @@ class ExtracterApigeeResources():
                     "EC-", "JWT-", "JWS-",
                     "SC-", "SA-","Stats-",
                     "VAK-", "XMLTP-", "X2J-",
-                    "XSL-"]
+                    "XSL-"] # filtering all known convient names of policy expect FC and others unknown))
         sharedflows = []
         for policy in policies:
             structure_policy = str(policy).split("-")
@@ -91,19 +94,21 @@ class ExtracterApigeeResources():
             record["revisions"] = {}
             revisions = self.get_deployed_revisions_proxy(proxy["name"])
             if revisions == -1:
-                resp = json.loads(self.request.get(f"{self.main_url}{self.organization}/apis/{proxy["name"]}",).text)
-                revisions = [resp["latestRevisionId"]]
-            for revision in revisions:
                 revision_dependency = {}
-                url = f"{self.main_url}{self.organization}/apis/{proxy["name"]}/revisions/{revision}?format=bundle"
-                list_sharedflow = self.get_sharedflows(url)
-                revision_dependency["sharedflow"] = list_sharedflow
-                record["revisions"][f"{revision}"] = revision_dependency
+                resp = json.loads(self.request.get(f"{self.main_url}{self.organization}/apis/{proxy["name"]}",).text)
+                revision_dependency["enviroment"] = ""
+                record["revisions"][f"{resp["latestRevisionId"]}"] = revision_dependency
+            else:
+                for revision in revisions:
+                    revision_dependency = {}
+                    url = f"{self.main_url}{self.organization}/apis/{proxy["name"]}/revisions/{revision["revision"]}?format=bundle"
+                    list_sharedflow = self.get_sharedflows(url)
+                    revision_dependency["sharedflow"] = list_sharedflow
+                    revision_dependency["enviroment"] = revision["environment"]
+                    record["revisions"][f"{revision["revision"]}"] = revision_dependency
             record["kvms"] = self.get_kvms_proxy(proxy["name"])
             response.append(record)
         print(f"Total proxy extracted: {len(response)}")
-        with open("proxy.json", "w", encoding="utf-8") as proxyfile:
-            json.dump(response, proxyfile, ensure_ascii=False, indent=4)
         print("proxy was done")
         return response
     def get_organization(self):
@@ -133,6 +138,8 @@ class ExtracterApigeeResources():
                 record["revisions"][f"{numberRevision}"]["environment"] = revision["environment"]
                 record["revisions"][f"{numberRevision}"]["proxy"] = [] 
             sharedflows.append(record)
+        print(f"Total sharedflow extracted: {len(sharedflows)}")
+        print("sharedflow was done")
         return sharedflows
     def get_sharedflow_deployments(self, sharedflowName):
         response = self.request.get(f"{self.main_url}{self.organization}/sharedflows/{sharedflowName}/deployments")
@@ -156,6 +163,8 @@ class ExtracterApigeeResources():
                     apiproduct["proxy"] = proxy
             if "proxies" in details_apiproduct:
                 apiproduct["proxy"] = details_apiproduct["proxies"]
+        print(f"Total apiproducts extracted: {len(apiproducts)}")
+        print("sharedflow was done")
         return apiproducts
     def get_apps(self):
         response = self.request.get(f"{self.main_url}{self.organization}/apps?expand=true")
@@ -170,6 +179,8 @@ class ExtracterApigeeResources():
                     apiproducts.append(apiproduct['apiproduct'])
             record["apiproduct"] = apiproducts
             new_format_apps.append(record)
+        print(f"Total apps extracted: {len(new_format_apps)}")
+        print("apps was done")
         return new_format_apps
     def get_developers(self):
         response = self.request.get(f"{self.main_url}{self.organization}/developers?expand=true")
@@ -184,6 +195,8 @@ class ExtracterApigeeResources():
                     apps.append(app)
             record["app"] = apps
             new_format_developers.append(record)
+        print(f"Total developers extracted: {len(new_format_developers)}")
+        print("Developers was done")
         return new_format_developers
     def get_flowhooks(self, env):
         response = self.request.get(f"{self.main_url}{self.organization}/environments/{env}/flowhooks").json()
@@ -203,58 +216,63 @@ class ExtracterApigeeResources():
     def get_caches(self,env):
         response = self.request.get(f"{self.main_url}{self.organization}/environments/{env}/caches").json()
         return response
-    def build_hierarchy(self):
+    def build_hierarchy(self, file):
         structure = {}
         organization = self.get_organization()
         structure["organization_name"] = organization["name"]
         structure["organization_kvm"] = self.get_kvms_organization()
-        structure["environments"] = [{"name": env, "kvm": self.get_kvms_environment(env)} 
+        structure["environments"] = [{"name": env, "kvm": self.get_kvms_environment(env),
+                                      "keystore": self.get_keystores(env), "cache": self.get_caches(env),
+                                      "flowhook": self.get_flowhooks(env), "proxy": [], "sharedflow": []} 
                                      for env in organization["environments"]]
         structure["sharedflow"] = self.get_sharedflows_list()
         structure["proxy"] = self.get_proxies()
         structure["apiproduct"] = self.get_apiproducts()
         structure["app"] = self.get_apps()
         structure["developers"] = self.get_developers()
-
-        for proxy in structure["proxy"]: # find depedency between proxy and sharedflow
-            for key, value in dict(proxy["revisions"]).items():
-                for sharedfl in value["sharedflow"]:
-                    for sharedflow in structure["sharedflow"]:
-                        if sharedfl == sharedflow["name"]:
-                            list(sharedflow["proxy"]).append(proxy["name"])
-        for apiproduct in structure["apiproduct"]: # find depedency between apiproduct and proxy
+        print("Start collecting dependencies...")
+        for environment in structure["environments"]: # find dependency between environment and proxy
+            for proxy in structure["proxy"]:
+                for key,value in proxy["revisions"].items():
+                    if environment["name"] == value["enviroment"]:
+                        environment["proxy"].append(proxy["name"])
+        for environment in structure["environments"]: # find dependency between environment and sharedflow
+            for sharedflow in structure["sharedflow"]:
+                if len(sharedflow["revisions"]) > 0:
+                    for key,value in sharedflow["revisions"].items():
+                            if environment["name"] == value["environment"]:
+                                environment["sharedflow"].append(sharedflow["name"])
+        for proxy in structure["proxy"]: # find dependency between proxy and sharedflow
+            for key, value in proxy["revisions"].items():
+                if "sharedflow" in value:
+                    for sharedfl in value["sharedflow"]:
+                        for sharedflow in structure["sharedflow"]:
+                            if sharedfl == sharedflow["name"]:
+                                sharedflow["proxy"].append(proxy["name"])
+        for apiproduct in structure["apiproduct"]: # find dependency between apiproduct and proxy
             for proxy in apiproduct["proxy"]:
                 for prox in structure["proxy"]:
                     if prox["name"] == proxy:
                        prox["apiproduct"] = apiproduct["name"]
-        for app in structure["app"]: # find depedency between app and apiproduct
+        for app in structure["app"]: # find dependency between app and apiproduct
             for apiproduct in app['apiproduct']:
                 for apiprod in structure["apiproduct"]:
                     if apiprod["name"] == apiproduct:
                        apiprod["app"] = app["name"]
-        for developer in structure["developers"]: # find depedency between developers and app
+        print("Almost done, are you still there?")
+        for developer in structure["developers"]: # find dependency between developers and app
             for app in developer['app']:
-                for App in structure["apps"]:
+                for App in structure["app"]:
                     if App["name"] == app:
                        App["developer"] = developer["email"]
-        
-        
-        
-        with open("hierarchy.json", "w", encoding="utf-8") as hierarchy:
+        with open(file, "w", encoding="utf-8") as hierarchy:
             json.dump(structure, hierarchy, ensure_ascii=False, indent=4)
-        return structure
-    def get_proxy(self,name,includeRevisions=False,includeMetaData=False):
-        response = self.request.get(f"{self.main_url}{self.organization}/apis/{name}")
-        proxies_json = json.loads(response.text)
-        return proxies_json
+        print(f"hierarchy saved in file: {file}")
+        return structure 
 if __name__ == "__main__":
    start = time.time()
    extracter = ExtracterApigeeResources()
-   data1 = extracter.get_caches("default-test")
+   data1 = extracter.build_hierarchy("hierarchy.json")
    end = time.time()
-   print(data1)
-   print(f"Length: {len(data1)}")
-   print("Time: %d", end-start)
-#    with open("result.json", "w") as f:
-#         f.write(json.dumps(data1))
+   print("Time to complete: %d", end-start)
 
