@@ -3,3 +3,10 @@
 .env
 env/
 __pycache__/
+
+# Script generated files
+cleaner_output.json
+hierarchy.json
+
+# User generated files
+resources.txt

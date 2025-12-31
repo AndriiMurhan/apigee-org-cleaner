@@ -5,6 +5,12 @@ import time
 import xml.etree.ElementTree as ET
 from auth2 import Auth2Token
 from request import RestRequest
+
+from CSVParser import CSVParser
+from cleaner import Cleaner
+import json
+from pprint import pprint
+
 class ExtracterApigeeResources():
     def __init__(self,domain="apigee.googleapis.com", 
                  organization="gcp101027-apigeex"):
@@ -153,6 +159,7 @@ class ExtracterApigeeResources():
         apiproducts = response.json()['apiProduct']
         for apiproduct in apiproducts:
             apiproduct["proxy"] = [] 
+            apiproduct["app"] = []
             details_apiproduct = self.request.get(f"{self.main_url}{self.organization}/apiproducts/{apiproduct["name"]}").json()
             if "operationGroup" in details_apiproduct:
                 if "operationConfigs" in details_apiproduct["operationGroup"]:
@@ -178,6 +185,7 @@ class ExtracterApigeeResources():
                 for apiproduct in app["credentials"][0]['apiProducts']:
                     apiproducts.append(apiproduct['apiproduct'])
             record["apiproduct"] = apiproducts
+            record["key"] = app["credentials"][0]["consumerKey"]
             new_format_apps.append(record)
         print(f"Total apps extracted: {len(new_format_apps)}")
         print("apps was done")
@@ -258,7 +266,7 @@ class ExtracterApigeeResources():
             for apiproduct in app['apiproduct']:
                 for apiprod in structure["apiproduct"]:
                     if apiprod["name"] == apiproduct:
-                       apiprod["app"] = app["name"]
+                       apiprod["app"].append(app["name"])
         print("Almost done, are you still there?")
         for developer in structure["developers"]: # find dependency between developers and app
             for app in developer['app']:
@@ -271,8 +279,19 @@ class ExtracterApigeeResources():
         return structure 
 if __name__ == "__main__":
    start = time.time()
-   extracter = ExtracterApigeeResources()
-   data1 = extracter.build_hierarchy("hierarchy.json")
+   # extracter = ExtracterApigeeResources()
+   # print("Starting extraction...")
+   # data1 = extracter.build_hierarchy("hierarchy.json")
+
+   # Temporary access to hierarchy.json
+   with open("hierarchy.json", "r") as jsonFile:
+       data1 = json.load(jsonFile)
+
+   parser = CSVParser()
+   data2 = parser.parse("resources.txt")
+   
+   cleaner = Cleaner(data2, data1)
+   cleaner.clean()
    end = time.time()
    print("Time to complete: %d", end-start)
 
