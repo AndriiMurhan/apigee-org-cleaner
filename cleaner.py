@@ -1,3 +1,5 @@
+from datetime import datetime
+import time
 from request import RestRequest
 import xml.etree.ElementTree as ET
 import requests
@@ -5,75 +7,96 @@ import zipfile
 import io
 import json
 
-class Cleaner():
-    def __init__(self, filterList, hierarchy,
-                 domain="apigee.googleapis.com", 
-                 organization="gcp101027-apigeex"):
-        self.filterList = filterList
+class ApigeeOrganizationCleaner():
+    def __init__(self, imp_proxies: list, hierarchy: object, domain: str = "apigee.googleapis.com", 
+                 organization: str = "gcp101027-apigeex"):
+        self.imp_proxies = imp_proxies
         self.hierarchy = hierarchy
         self.domain = domain
         self.main_url = f"https://{self.domain}/v1/organizations/"
         self.organization = organization
+        
         self.request = RestRequest()
 
-    def allowedToDelete(self, proxy):
-        return proxy not in self.filterList
+    # --- HELPERS ---
+    def log(self, message):
+        current_time = datetime.now().strftime("%H:%M:%S")
+        class_name = self.__class__.__name__
+        print(f"[{current_time}] {class_name} - {message}")
 
-    # Proxy
-    # ------------------------
+    def api_delete(self, url, resource_name):
+        self.log(f"Successfully deleted: {resource_name}")
+        return True # --- PROTECTION -------------------------------
+
+        try:
+            resp = self.request.delete(url)
+
+            if resp.status_code in [200, 204]:
+                self.log(f"Successfully deleted: {resource_name}")
+                return True
+            elif resp.status_code == 404:
+                self.log(f"Resource was not found! It's already gone: {resource_name}")
+                return True
+            else:
+                print(f"Error deleting {resource_name}: {resp.text}")
+                return False
+        except Exception as e:
+            self.log(f"Exception deleting {resource_name}: {e}")
+
+    def is_important_proxy(self, proxy:str) -> bool:
+        return proxy in self.imp_proxies
+
+    # --- PROXIES ---
     # Algorithm
     # 1. Check if proxy is in the filter list
     #   a. If in the list then skip it
     # 2. Iterate though revisions and undeploy every revision from its enviroment
     # 3. When every revision is undeployed, remove proxy dependenies in the hierarchy and organization
     # 4. Remove proxy itself from hierarchy.json and organization (DELETE Request)
-    def deleteProxies(self):
-        proxies = self.hierarchy["proxy"]
-
+    def delete_proxies(self):
+        self.log("--- Processing PROXIES ---")
+        
+        proxies = self.hierarchy.get("proxy", [])
         for proxy in proxies[:]:
-            #  Check if proxy is in the filter list
-            if not self.allowedToDelete(proxy["name"]):
-                print(f"Proxy that are not allow to delete: {proxy}")
+            if self.is_important_proxy(proxy["name"]):  
+                self.log(f"Skipping protected proxy: {proxy["name"]}")              
                 continue
             
-            # Iterate thought proxy revisions, undeploy it and remove from hierarchy
-            # ---
-            revisions = proxy["revisions"]
-            for revision in revisions.keys():
-                # request to undeploy
-                # DELETE: organizations/{org}/environments/{env}/apis/{api}/revisions/{rev}
-                None
-            # ---
+            # Undeploy Revisions
+            revisions = proxy.get("revisions", {})
+            for revision, details in revisions.items():
+                env_name = details.get("enviroment")
+                if env_name:
+                    self.log(f"Undeploying {proxy['name']} rev {revision} from {env_name}...")
+                    url = f"{self.main_url}/environments/{env_name}/apis/{proxy["name"]}/revisions/{revision}/deployments"       
+                    # self.request.delete(url) - --------------------- PROTECTION -----------------------
+                    time.sleep(3)     
             
-            # Check and delete all posible proxy dependencies
-            self.deleteProxyDependencies(proxy["name"])
+            self.delete_proxy_dependencies(proxy["name"])
+            
+            url = f"{self.main_url}/apis/{proxy["name"]}"
+            if self.api_delete(url,f"Proxy {proxy["name"]}"):
+                proxies.remove(proxy)
 
-            # Delete proxy itself: DELETE request
-            # DELETE: organizations/{org}/apis/{api}
-            proxies.remove(proxy)
-
-    def deleteProxyDependencies(self, proxy: object) -> None:
-        # Enviroment dependency
-        for env in self.hierarchy["environments"]:
+    def delete_proxy_dependencies(self, proxy_name: str):
+        self.log(f"Deleting dependencies of {proxy_name}...")
+        
+        for env in self.hierarchy.get("environments", []):
             env_proxies = env["proxy"]
-            while proxy in env_proxies:
-                env_proxies.remove(proxy)
+            while proxy_name in env_proxies:
+                env_proxies.remove(proxy_name)
 
-        # SharedFlow dependency
-        for sh in self.hierarchy["sharedflow"]:
+        for sh in self.hierarchy.get("sharedflow", []):
            sh_proxies = sh["proxy"]
-           while proxy in sh_proxies:
-               sh_proxies.remove(proxy)
+           while proxy_name in sh_proxies:
+               sh_proxies.remove(proxy_name)
 
-        # API Products
-        for apip in self.hierarchy["apiproduct"]:
+        for apip in self.hierarchy.get("apiproduct", []):
             apip_proxies = apip["proxy"]
-            while proxy in apip_proxies:
-                apip_proxies.remove(proxy)
-    # ------------------------
+            while proxy_name in apip_proxies:
+                apip_proxies.remove(proxy_name)
 
-
-    # SharedFlow
+    # --- SHAREDFLOWS ---
     # Algorithm
     # 1. Check if any not deleted proxy has attached the proxy to it
     #   a. If has than we skip it
@@ -82,70 +105,75 @@ class Cleaner():
     # 3. Undeploy sharedflow from enviremont
     # 4. Remove all possible dependencies with other resources
     # 5. Remove sharedFlow itself.
-    # ------------------------
-    def deleteSharedFlows(self):
-        sharedFlows = self.hierarchy["sharedflow"]
-
-        for sharedFlow in sharedFlows[:]:
+    def delete_sharedflows(self):
+        self.log("--- Processing SHAREDFLOWS ---")
+        
+        sharedflows = self.hierarchy.get("sharedflow", [])
+        for sharedflow in sharedflows[:]:
             # Check if shared flow is attached to any proxy
-            if len(sharedFlow["proxy"]) > 0:
-                print(f"SharedFlow with name: {sharedFlow["name"]} is attached to proxy. Can't be removed!")
+            if len(sharedflow["proxy"]) > 0:
+                self.log(f"SharedFlow {sharedflow['name']} is used by existing proxies. Skipping.")
                 continue
             
-            # Check if shared flow is attached to any flowhook in enviroment
-            envsWithAttachedSharedFlows = self.checkSharedFlowAttachedToFlowHook(sharedFlow)
-
-            # If such sharedflows exist we will detach them and undeploy from this enviremonets
-            for envWithAttachedSharedFlow in envsWithAttachedSharedFlows:
-                # detaching and undeploying with DELETE Request
-                # DELETE: organizations/{org}/environments/{env}/flowhooks/{flowhook}
-                None
+            # Detach from FlowHooks
+            envs_attached = self.get_sharedflow_flowhook_attachments(sharedflow["name"])
+            for env_name in envs_attached:
+                self.detach_flowhook(env_name, sharedflow["name"])
 
             # Undeploying
-            for sh_revisions in sharedFlow["revisions"]:
-                # DELETE request to undeploy
-                # DELETE: organizations/{org}/environments/{env}/sharedflows/{sharedflow}/revisions/{rev}
-                None
+            revisions = sharedflow.get("revisions", {})
+            for revision, details in revisions.items():
+                env_name = details.get("environment")
+                if env_name:
+                    self.log(f"Undeploying SharedFlow {sharedflow['name']} rev {revision} from {env_name}")
+                    url = f"{self.main_url}/environments/{env_name}/sharedflows/{sharedflow['name']}/revisions/{revision}/deployments"
+                    # self.request.delete(url) -------------------- PROTECTION -----------------------
+                    time.sleep(3)
 
             # Check and delete all posible sharedFlow dependencies
-            self.deleteSharedflowDependencies(sharedFlow)
+            self.delete_shareflow_dependencies(sharedflow)
 
             # Delete sharedflow itself: DELETE request
             # DELETE: organizations/{organizationId}/sharedflows/{sharedFlowId}
-            sharedFlows.remove(sharedFlow)
+            url = f"{self.main_url}/sharedflows/{sharedflow['name']}"
+            if self.api_delete(url, f"SharedFlow {sharedflow["name"]}"):
+                sharedflows.remove(sharedflow)
 
-    def checkSharedFlowAttachedToFlowHook(self, sharedflow: str) -> list:
-        envsWithSharedFlow = []
+    def detach_flowhook(self, env_name, sf_name):
+        self.log(f"Detaching {sf_name} from FlowHooks in {env_name}")
+        env_data = next((e for e in self.hierarchy["environments"] if e["name"] == env_name), None)
+        if not env_data: return
+       
+        hooks = ["PreProxyFlowHook", "PostProxyFlowHook", "PreTargetFlowHook", "PostTargetFlowHook"]   
+        for hook_name in hooks:
+            hook_in_json = next((h for h in env_data.get("flowhook", []) if h["name"] == hook_name), None)
+            
+            if hook_in_json and hook_in_json.get("sharedflow") == sf_name:
+                url = f"{self.main_url}/environments/{env_name}/flowhooks/{hook_name}"
+                # self.request.delete(url) -------------------- PROTECTION -----------------------
+                hook_in_json["sharedflow"] = ""
 
-        isAttached = False
+    def get_sharedflow_flowhook_attachments(self, sf_name: str) -> list:
+        envs_with_sharedflow = []
+
         for env in self.hierarchy["environments"]:
             env_flowhooks = env["flowhook"]
-            # Check attachment to flowhook in enviroment
             for flowhook in env_flowhooks:
-                if flowhook["sharedflow"] == sharedflow["name"]:     
-                    isAttached = True   
-                    break
-
-            if not isAttached:
-                continue
-
-            # Check if env is invalid(doesnt include any proxies) that means having sharedFlow in flowHook is usless
-            if len(env["proxy"]) < 1:
-                envsWithSharedFlow.append(env["name"])
+                if flowhook.get("sharedflow") == sf_name:     
+                    # Check if environment is invalid(doesn't have any proxies)
+                    if len(env["proxy"]) < 1:
+                        envs_with_sharedflow.append(env["name"])
         
-        return envsWithSharedFlow
+        return list(set(envs_with_sharedflow))
 
-    def deleteSharedflowDependencies(self, sharedflow: object):
-        # Enviroment dependency
+    def delete_shareflow_dependencies(self, sharedflow: object):
         for env in self.hierarchy["environments"]:
             env_sharedflows = env["sharedflow"]
             if sharedflow["name"] in env_sharedflows:
                 env_sharedflows.remove(sharedflow["name"])
 
-    # ------------------------
 
-
-    # API Products
+    # --- API PRODUCTS ---
     # Algorithm
     # Before iteration clean apiproducts from non existing proxies.
     # 1. Check if api product has any attached proxy to it
@@ -153,135 +181,121 @@ class Cleaner():
     # 2. Iterate though the list of apps that attached to this product
     # 3. Remove dependency from the apps and current api product
     # 4. Remove api product itself
-    # ------------------------
-    def deleteApiProducts(self):
-        self.apiProductsCleanUp()
-        apiproducts = self.hierarchy["apiproduct"]
+    def delete_api_products(self):
+        self.log("--- Processing API PRODUCTS ---")
+        self.api_products_clean_up()
 
+        apiproducts = self.hierarchy.get("apiproduct")
         for apip in apiproducts[:]:
             # Check if api product has any proxies
             if len(apip["proxy"]) > 0:
-                continue # We cant remove that important product
-
-            # Check if api product has any attached app
-            if "app" in apip:
-                apps = apip["app"]
-
-                for app in self.hierarchy["app"]:
-                    if app["name"] in apps:
-                        if(apip["name"] in app["apiproduct"]):
-                            app["apiproduct"].remove(apip["name"])
-                            apip["app"].remove(app["name"])
-                    # Detach this app: DELETE Request
-                    # DELETE: organizations/{org}/developers/{developerEmail}/apps/{app}/keys/{key}/apiproducts/{apiproduct}
-                    # TO-DO: Multiple Credentials case
-                None
+                self.log(f"API product: {apip["name"]} has active proxies. Skipping.")
+                continue
+            
+            apps_using = apip.get("app", [])
+            for app_name in apps_using:
+                self.detach_product_from_app(app_name, apip["name"])
 
             # DELETE: organizations/{org}/apiproducts/{apiproduct}
-            apiproducts.remove(apip)
+            url = f"{self.main_url}/apiproducts/{apip["name"]}"
+            if self.api_delete(url, f"API Product {apip["name"]}"):
+                apiproducts.remove(apip)
 
-    def apiProductsCleanUp(self):
-        apiproducts = self.hierarchy["apiproduct"]
-        for apip in apiproducts:
-            apip_proxies = apip["proxy"]
-            for apip_proxy in apip_proxies[:]:
-                is_exist = False
-                for proxy in self.hierarchy["proxy"]:
-                    if apip_proxy == proxy["name"]:
-                        is_exist = True
-                        break
-                
-                if not is_exist:
-                    apip_proxies.remove(apip_proxy)
-    # ------------------------
+    def detach_product_from_app(self, app_name, product_name):
+        # Helper to find dev and remove key association
+        app_obj = next((a for a in self.hierarchy["app"] if a["name"] == app_name), None)
+        if not app_obj: return
 
-    # Developers and Apps
+        dev_email = app_obj["developer"]
+        key = app_obj["key"] 
+
+        self.log(f"Revoking/Removing product {product_name} from App {app_name} (Dev: {dev_email})")
+
+        # TO-DO: Consider multiple credentials case
+
+        url = f"{self.main_url}/developers/{dev_email}/apps/{app_name}/keys/{key}/apiproducts/{product_name}"
+        # self.request.delete(url) --- PROTECTION -------------------------
+            
+        # Clean JSON
+        if product_name in app_obj["apiproduct"]:
+            app_obj["apiproduct"].remove(product_name)
+
+    def api_products_clean_up(self):
+        existing_proxy_names = [p["name"] for p in self.hierarchy["proxy"]]
+        for apip in self.hierarchy["apiproduct"]:
+            apip["proxy"] = [p for p in apip["proxy"] if p in existing_proxy_names]
+
+
+    # -- DEVELOPERS AND APPS ---
     # 1. Check if developer has apps
     #   a. If false, the safely delete this developer
     # 2. Else iterate though developer's apps
     # 3. Match apps with existing apps
     # 4. If The app doesn't have any api product, then remove it from dev list and itself
     # 5. If developer was left with no apps, then remove the developer
-    # ------------------------
-    def deleteDevelopersAndApps(self):
-        developers = self.hierarchy["developers"]
-
+    def delete_developer_and_apps(self):
+        self.log("--- Processing DEVS & APPS ---")
+        
+        developers = self.hierarchy.get("developers", [])
         for dev in developers[:]:
             # Check if dev has any apps
-            dev_apps = dev["app"]
-            if len(dev_apps) < 1:
-                # Delete the dev: DELETE request
-                # DELETE: organizations/{org}/developers/{developerEmail}
-                developers.remove(dev)
-            else:
-                # Iterate though the apps
-                for dev_app in dev_apps[:]:
-                    apps = self.hierarchy["app"]
-                    # Find the app and check if it is still valid
-                    for app in apps[:]:
-                        if dev_app == app["name"] and dev["email"] == app["developer"]:
-                            if len(app["apiproduct"]) < 1:
-                                print(f"Dev: {dev["email"]}, app: {app["name"]}")
-                                if app["name"] in dev_apps:
-                                    dev_apps.remove(app["name"])
-                                apps.remove(app)
-                                # Remove App: Delete REQUEST
-                                # DELETE: organizations/{org}/developers/{developerEmail}/apps/{app}
+            dev_apps = dev.get("app", [])
+            for app_name in dev_apps[:]:
+                full_app = next((a for a in self.hierarchy["app"] if a["name"] == app_name), None)
+
+                if full_app and len(full_app["apiproduct"]) < 1:
+                    self.log(f"Deleting App {app_name} (no products)")
+                    url = f"{self.main_url}/developers/{dev['email']}/apps/{app_name}"
+                    if self.api_delete(url, f"App {app_name}"):
+                        dev_apps.remove(app_name)
+                        if full_app in self.hierarchy["app"]:
+                            self.hierarchy["app"].remove(full_app)
 
                 if len(dev_apps) < 1:
-                    # Remove dev: DELETE Request
-                    # DELETE: organizations/{org}/developers/{developerEmail}
-                    developers.remove(dev)
-    # ------------------------
+                    url = f"{self.main_url}/developers/{dev["email"]}"
+                    if self.api_delete(url, f"Developer {dev["email"]}"):
+                        developers.remove(dev)
 
-    # Key Value Maps
+    # --- KEY VALUE MAPS ---
     # Algorithm
-    # 1. According to led proxies, get all the kvm that they use
+    # 1. According to left proxies, get all the kvm that they use
     # 2. Iterate though org_kvm and remove kvms that are not in the safe list
     # 3. Iterate though env_kvm and remove kvms that are not in the safe list
-    # ------------------------
-    def deleteKVMs(self):
+    def delete_kvms(self):
+        self.log("--- Processing KVMs ---")
         safe_kvms = self.find_kvms_used_in_proxies()
-        print(safe_kvms)
-
-        # Iterate though organizations kvms
+        
+        # Org kvms
         org_kvm = self.hierarchy["organization_kvm"]
         for kvm in org_kvm[:]:
-            # Check the kvm
             if kvm not in safe_kvms:
-                # DELETE request
-                # DELETE: organizations/{org}/keyvaluemaps/{keyvaluemap}
-                org_kvm.remove(kvm)
+                url = f"{self.main_url}/keyvaluemaps/{kvm}"
+                if self.api_delete(url, f"Org KVM {kvm}"):
+                    org_kvm.remove(kvm)
 
-        # Iterate though enviroments kvms
+        # Env kvms
         envs = self.hierarchy["environments"]
         for env in envs:
             env_kvm = env["kvm"]
-
             for kvm in env_kvm[:]:
-                # Check the kvm
                 if kvm not in safe_kvms:
-                    # DELETE request
-                    # DELETE: organizations/{org}/environments/{env}/keyvaluemaps/{keyvaluemap}
-                    env_kvm.remove(kvm)
+                    url = f"{self.main_url}/environments/{env['name']}/keyvaluemaps/{kvm}"
+                    if self.api_delete(url, f"Env KVM {kvm} in {env["name"]}"):
+                        env_kvm.remove(kvm)
 
     def find_kvms_used_in_proxies(self):
         used_kvms = set()
-        
-        # Get all left proxies
         proxies = self.hierarchy["proxy"]
         
-        print(f"Starting static analysis of {len(proxies)} proxies...")
-
+        self.log(f"Starting static analysis of {len(proxies)} proxies...")
         for proxy in proxies:
             proxy_name = proxy["name"]
+            
             revisions = proxy["revisions"]
-
             for revision in list(revisions.keys()):
-                print(f"  Checking {proxy_name} revision {revision}...")
+                self.log(f"Checking {proxy_name} revision {revision}...")
                 
                 url = f"{self.main_url}{self.organization}/apis/{proxy["name"]}/revisions/{revision}?format=bundle"
-                
                 try:
                     response = self.request.get(url)
                     response.raise_for_status()
@@ -293,11 +307,11 @@ class Cleaner():
                                     try:
                                         self.parse_policy_for_kvm(policy_file, used_kvms)
                                     except ET.ParseError:
-                                        print(f"Error parsing XML: {filename}")
+                                        self.log(f"Error parsing XML: {filename}")
                 except requests.exceptions.RequestException as e:
-                    print(f"Failed to download bundle for {proxy_name} rev {revision}: {e}")
+                    self.log(f"Failed to download bundle for {proxy_name} rev {revision}: {e}")
 
-        print(f"Found {len(used_kvms)} used KVMs: {used_kvms}")
+        self.log(f"Found {len(used_kvms)} used KVMs: {used_kvms}")
         return used_kvms
     
     def parse_policy_for_kvm(self, policy_file, used_kvms_set):
@@ -320,9 +334,8 @@ class Cleaner():
                     
         except Exception as e:
             pass
-    # ------------------------
 
-    # Environments
+    # --- ENVIRONMENTS ---
     # Algorithm
     # 1. Check if env has any proxies
     # 2. Check if env has any sharedFlows
@@ -330,35 +343,32 @@ class Cleaner():
     # 4. If env is blank then delete it
     # ------------------------ 
     def delete_environments(self):
-        envs = self.hierarchy["environments"]
-
-        for env in envs[:]:
-            # Check if env has any proxies 
-            if len(env["proxy"]) > 0:
-                continue
-
-            # Check if env has any sharedflows 
-            if len(env["sharedflow"]) > 0:
-                continue
-
-            # Check if env has any kvms
-            if len(env["kvm"]) > 0:
-                continue
-
-            # DELETE env REQUEST
-            # DELETE: organizations/{org}/environments/{env}
-            envs.remove(env)
+        self.log("--- Processing ENVIRONMENTS ---")
         
-    # ------------------------
+        envs = self.hierarchy["environments"]
+        for env in envs[:]:
+            # Check if env has any proxies or sharedflows
+            has_proxies = len(env["proxy"]) > 0
+            has_sharedflows = len(env["sharedflow"]) > 0 
+            if has_proxies or has_sharedflows:
+                self.log(f"Skipping Env {env["name"]}: not empty.")
+                continue
+            
+            # TO-DO: Detach instance from environment
+
+            url = f"{self.main_url}/environments/{env["name"]}"
+            if self.api_delete(url, f"Environment {env["name"]}"):
+                envs.remove(env)
 
     def clean(self):
-        self.deleteProxies()
-        self.deleteSharedFlows()
-        self.deleteApiProducts()
-        self.deleteDevelopersAndApps()
-        self.deleteKVMs()
+        self.delete_proxies()
+        self.delete_sharedflows()
+        self.delete_api_products()
+        self.delete_developer_and_apps()
+        self.delete_kvms()
         self.delete_environments()
 
         with open("cleaner_output.json", "w") as file:
             json.dump(self.hierarchy, file, indent=4)
+
         

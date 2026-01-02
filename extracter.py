@@ -7,7 +7,7 @@ from auth2 import Auth2Token
 from request import RestRequest
 
 from CSVParser import CSVParser
-from cleaner import Cleaner
+from cleaner import ApigeeOrganizationCleaner
 import json
 from pprint import pprint
 
@@ -279,9 +279,9 @@ class ExtracterApigeeResources():
         return structure 
 if __name__ == "__main__":
    start = time.time()
-   # extracter = ExtracterApigeeResources()
-   # print("Starting extraction...")
-   # data1 = extracter.build_hierarchy("hierarchy.json")
+   #extracter = ExtracterApigeeResources(organization="sturdy-gate-482111-f9")
+   #print("Starting extraction...")
+   #data1 = extracter.build_hierarchy("hierarchy.json")
 
    # Temporary access to hierarchy.json
    with open("hierarchy.json", "r") as jsonFile:
@@ -290,8 +290,9 @@ if __name__ == "__main__":
    parser = CSVParser()
    data2 = parser.parse("resources.txt")
    
-   cleaner = Cleaner(data2, data1)
+   cleaner = ApigeeOrganizationCleaner(data2, data1, organization="sturdy-gate-482111-f9")
    cleaner.clean()
+   
    end = time.time()
    print("Time to complete: %d", end-start)
 

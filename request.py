@@ -20,3 +20,16 @@ class RestRequest():
             if retry == 3:
                 break
         return response
+    
+    def delete(self, url, stream=False):
+        retry = 0
+        response = requests.delete(url,headers=self.headers,stream=stream)
+        
+        while response.status_code == 401:
+            self.updateCrediatianals()
+            response = requests.delete(url,headers=self.headers, stream=stream)
+            retry += 1
+            if retry == 3:
+                break
+        
+        return response    
