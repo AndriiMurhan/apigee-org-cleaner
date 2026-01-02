@@ -1,10 +1,20 @@
-from pprint import pprint
+from request import RestRequest
+import xml.etree.ElementTree as ET
+import requests
+import zipfile
+import io
 import json
 
 class Cleaner():
-    def __init__(self, filterList, hierarchy):
+    def __init__(self, filterList, hierarchy,
+                 domain="apigee.googleapis.com", 
+                 organization="gcp101027-apigeex"):
         self.filterList = filterList
         self.hierarchy = hierarchy
+        self.domain = domain
+        self.main_url = f"https://{self.domain}/v1/organizations/"
+        self.organization = organization
+        self.request = RestRequest()
 
     def allowedToDelete(self, proxy):
         return proxy not in self.filterList
@@ -30,7 +40,8 @@ class Cleaner():
             # ---
             revisions = proxy["revisions"]
             for revision in revisions.keys():
-                # GET request to undeploy
+                # request to undeploy
+                # DELETE: organizations/{org}/environments/{env}/apis/{api}/revisions/{rev}
                 None
             # ---
             
@@ -38,6 +49,7 @@ class Cleaner():
             self.deleteProxyDependencies(proxy["name"])
 
             # Delete proxy itself: DELETE request
+            # DELETE: organizations/{org}/apis/{api}
             proxies.remove(proxy)
 
     def deleteProxyDependencies(self, proxy: object) -> None:
@@ -85,18 +97,21 @@ class Cleaner():
 
             # If such sharedflows exist we will detach them and undeploy from this enviremonets
             for envWithAttachedSharedFlow in envsWithAttachedSharedFlows:
-                # detaching and undeploying with GET Request
+                # detaching and undeploying with DELETE Request
+                # DELETE: organizations/{org}/environments/{env}/flowhooks/{flowhook}
                 None
 
             # Undeploying
             for sh_revisions in sharedFlow["revisions"]:
-                # GET request to undeploy
+                # DELETE request to undeploy
+                # DELETE: organizations/{org}/environments/{env}/sharedflows/{sharedflow}/revisions/{rev}
                 None
 
             # Check and delete all posible sharedFlow dependencies
             self.deleteSharedflowDependencies(sharedFlow)
 
             # Delete sharedflow itself: DELETE request
+            # DELETE: organizations/{organizationId}/sharedflows/{sharedFlowId}
             sharedFlows.remove(sharedFlow)
 
     def checkSharedFlowAttachedToFlowHook(self, sharedflow: str) -> list:
@@ -157,10 +172,12 @@ class Cleaner():
                         if(apip["name"] in app["apiproduct"]):
                             app["apiproduct"].remove(apip["name"])
                             apip["app"].remove(app["name"])
-                    # Detach this app: GET Request
+                    # Detach this app: DELETE Request
+                    # DELETE: organizations/{org}/developers/{developerEmail}/apps/{app}/keys/{key}/apiproducts/{apiproduct}
                     # TO-DO: Multiple Credentials case
                 None
 
+            # DELETE: organizations/{org}/apiproducts/{apiproduct}
             apiproducts.remove(apip)
 
     def apiProductsCleanUp(self):
@@ -194,6 +211,7 @@ class Cleaner():
             dev_apps = dev["app"]
             if len(dev_apps) < 1:
                 # Delete the dev: DELETE request
+                # DELETE: organizations/{org}/developers/{developerEmail}
                 developers.remove(dev)
             else:
                 # Iterate though the apps
@@ -208,17 +226,139 @@ class Cleaner():
                                     dev_apps.remove(app["name"])
                                 apps.remove(app)
                                 # Remove App: Delete REQUEST
+                                # DELETE: organizations/{org}/developers/{developerEmail}/apps/{app}
+
                 if len(dev_apps) < 1:
                     # Remove dev: DELETE Request
+                    # DELETE: organizations/{org}/developers/{developerEmail}
                     developers.remove(dev)
+    # ------------------------
 
+    # Key Value Maps
+    # Algorithm
+    # 1. According to led proxies, get all the kvm that they use
+    # 2. Iterate though org_kvm and remove kvms that are not in the safe list
+    # 3. Iterate though env_kvm and remove kvms that are not in the safe list
+    # ------------------------
+    def deleteKVMs(self):
+        safe_kvms = self.find_kvms_used_in_proxies()
+        print(safe_kvms)
+
+        # Iterate though organizations kvms
+        org_kvm = self.hierarchy["organization_kvm"]
+        for kvm in org_kvm[:]:
+            # Check the kvm
+            if kvm not in safe_kvms:
+                # DELETE request
+                # DELETE: organizations/{org}/keyvaluemaps/{keyvaluemap}
+                org_kvm.remove(kvm)
+
+        # Iterate though enviroments kvms
+        envs = self.hierarchy["environments"]
+        for env in envs:
+            env_kvm = env["kvm"]
+
+            for kvm in env_kvm[:]:
+                # Check the kvm
+                if kvm not in safe_kvms:
+                    # DELETE request
+                    # DELETE: organizations/{org}/environments/{env}/keyvaluemaps/{keyvaluemap}
+                    env_kvm.remove(kvm)
+
+    def find_kvms_used_in_proxies(self):
+        used_kvms = set()
+        
+        # Get all left proxies
+        proxies = self.hierarchy["proxy"]
+        
+        print(f"Starting static analysis of {len(proxies)} proxies...")
+
+        for proxy in proxies:
+            proxy_name = proxy["name"]
+            revisions = proxy["revisions"]
+
+            for revision in list(revisions.keys()):
+                print(f"  Checking {proxy_name} revision {revision}...")
+                
+                url = f"{self.main_url}{self.organization}/apis/{proxy["name"]}/revisions/{revision}?format=bundle"
+                
+                try:
+                    response = self.request.get(url)
+                    response.raise_for_status()
+
+                    with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+                        for filename in z.namelist():
+                            if filename.startswith("apiproxy/policies/") and filename.endswith(".xml"):
+                                with z.open(filename) as policy_file:
+                                    try:
+                                        self.parse_policy_for_kvm(policy_file, used_kvms)
+                                    except ET.ParseError:
+                                        print(f"Error parsing XML: {filename}")
+                except requests.exceptions.RequestException as e:
+                    print(f"Failed to download bundle for {proxy_name} rev {revision}: {e}")
+
+        print(f"Found {len(used_kvms)} used KVMs: {used_kvms}")
+        return used_kvms
+    
+    def parse_policy_for_kvm(self, policy_file, used_kvms_set):
+        try:
+            tree = ET.parse(policy_file)
+            root = tree.getroot()
+
+            if root.tag == "KeyValueMapOperations":
+                kvm_name = None
+                
+                if "mapIdentifier" in root.attrib:
+                    kvm_name = root.attrib["mapIdentifier"]
+                else:
+                    map_name_element = root.find("MapName")
+                    if map_name_element is not None:
+                        kvm_name = map_name_element.text
+
+                if kvm_name:
+                    used_kvms_set.add(kvm_name)
+                    
+        except Exception as e:
+            pass
+    # ------------------------
+
+    # Environments
+    # Algorithm
+    # 1. Check if env has any proxies
+    # 2. Check if env has any sharedFlows
+    # 3. Check for kvms
+    # 4. If env is blank then delete it
+    # ------------------------ 
+    def delete_environments(self):
+        envs = self.hierarchy["environments"]
+
+        for env in envs[:]:
+            # Check if env has any proxies 
+            if len(env["proxy"]) > 0:
+                continue
+
+            # Check if env has any sharedflows 
+            if len(env["sharedflow"]) > 0:
+                continue
+
+            # Check if env has any kvms
+            if len(env["kvm"]) > 0:
+                continue
+
+            # DELETE env REQUEST
+            # DELETE: organizations/{org}/environments/{env}
+            envs.remove(env)
+        
+    # ------------------------
 
     def clean(self):
         self.deleteProxies()
         self.deleteSharedFlows()
         self.deleteApiProducts()
         self.deleteDevelopersAndApps()
-        pprint(self.hierarchy)
+        self.deleteKVMs()
+        self.delete_environments()
+
         with open("cleaner_output.json", "w") as file:
             json.dump(self.hierarchy, file, indent=4)
         
