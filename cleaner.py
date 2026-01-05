@@ -93,11 +93,12 @@ class ApigeeOrganizationCleaner():
             revisions = proxy.get("revisions", {})
             for revision, details in revisions.items():
                 env_name = details.get("enviroment")
+                revision = revision.split("|")[0]
                 if env_name:
                     self.log(f"Undeploying {proxy['name']} rev {revision} from {env_name}...")
                     url = f"{self.main_url}/environments/{env_name}/apis/{proxy["name"]}/revisions/{revision}/deployments"       
-                    self.request.delete(url) #- --------------------- PROTECTION -----------------------
-                    self.wait_for_undeploy(env_name, "apis", proxy["name"], revision)  
+                    #self.request.delete(url) - --------------------- PROTECTION -----------------------
+                    #self.wait_for_undeploy(env_name, "apis", proxy["name"], revision)  
             
             self.delete_proxy_dependencies(proxy["name"])
             
@@ -144,18 +145,24 @@ class ApigeeOrganizationCleaner():
             
             # Detach from FlowHooks
             envs_attached = self.get_sharedflow_flowhook_attachments(sharedflow["name"])
-            for env_name in envs_attached:
+            for env_name in envs_attached.get("envs_to_detach"):
                 self.detach_flowhook(env_name, sharedflow["name"])
+
+            can_delete = envs_attached.get("can_delete")
+            if not can_delete:
+                self.log(f"SharedFlow '{sharedflow['name']}' is used in a LIVE environment flowhook. Skipping.")
+                continue
 
             # Undeploying
             revisions = sharedflow.get("revisions", {})
             for revision, details in revisions.items():
                 env_name = details.get("environment")
+                revision = revision.split("|")[0]
                 if env_name:
                     self.log(f"Undeploying SharedFlow {sharedflow['name']} rev {revision} from {env_name}")
                     url = f"{self.main_url}/environments/{env_name}/sharedflows/{sharedflow['name']}/revisions/{revision}/deployments"
-                    self.request.delete(url) # -------------------- PROTECTION -----------------------
-                    self.wait_for_undeploy(env_name, "sharedflows", sharedflow["name"], revision, 120)  
+                    #self.request.delete(url) # -------------------- PROTECTION -----------------------
+                    #self.wait_for_undeploy(env_name, "sharedflows", sharedflow["name"], revision, 120)  
 
             # Check and delete all posible sharedFlow dependencies
             self.delete_shareflow_dependencies(sharedflow)
@@ -175,21 +182,30 @@ class ApigeeOrganizationCleaner():
             
             if hook_in_json and hook_in_json.get("sharedflow") == sf_name:
                 url = f"{self.main_url}/environments/{env_name}/flowhooks/{hook_name}"
-                self.request.delete(url) # -------------------- PROTECTION -----------------------
+                #self.request.delete(url) # -------------------- PROTECTION -----------------------
                 hook_in_json["sharedflow"] = ""
 
-    def get_sharedflow_flowhook_attachments(self, sf_name: str) -> list:
-        envs_with_sharedflow = []
+    def get_sharedflow_flowhook_attachments(self, sf_name: str) -> object:
+        env_to_detach = []
+        is_blocking_deletion = False
 
         for env in self.hierarchy["environments"]:
             env_flowhooks = env["flowhook"]
+            
+            is_attached_in_this_env = False
             for flowhook in env_flowhooks:
-                if flowhook.get("sharedflow") == sf_name:     
-                    # Check if environment is invalid(doesn't have any proxies)
-                    if len(env["proxy"]) < 1:
-                        envs_with_sharedflow.append(env["name"])
-        
-        return list(set(envs_with_sharedflow))
+                if flowhook.get("sharedflow") == sf_name:
+                    is_attached_in_this_env = True
+                    break
+            
+            if is_attached_in_this_env:
+                has_proxies = len(env.get("proxy", [])) > 0
+                if has_proxies:
+                    is_blocking_deletion = True
+                else:
+                    env_to_detach.append(env["name"])
+
+        return {"can_delete": not is_blocking_deletion, "envs_to_detach": list(set(env_to_detach))}
 
     def delete_shareflow_dependencies(self, sharedflow: object):
         for env in self.hierarchy["environments"]:
@@ -243,7 +259,7 @@ class ApigeeOrganizationCleaner():
             is_product_exits = any(apip.get("apiproduct") == product_name for apip in cred_products)
             if is_product_exits:
                 url = f"{self.main_url}/developers/{dev_email}/apps/{app_name}/keys/{consKey}/apiproducts/{product_name}"
-                self.request.delete(url)  #--- PROTECTION -------------------------
+                #self.request.delete(url)  #--- PROTECTION -------------------------
             
         # Clean JSON
         if product_name in app_obj["apiproduct"]:
@@ -322,6 +338,7 @@ class ApigeeOrganizationCleaner():
             
             revisions = proxy["revisions"]
             for revision in list(revisions.keys()):
+                revision = revision.split("|")[0]
                 self.log(f"Checking {proxy_name} revision {revision}...")
                 url = f"{self.main_url}/apis/{proxy["name"]}/revisions/{revision}?format=bundle"
                 zip_folder_prefix = "apiproxy/policies/"
@@ -336,6 +353,7 @@ class ApigeeOrganizationCleaner():
             revisions = sf.get("revisions", {})
             
             for revision in list(revisions.keys()):
+                revision = revision.split("|")[0]
                 self.log(f"Checking SharedFlow {sf_name} revision {revision}...")
                 url = f"{self.main_url}/sharedflows/{sf_name}/revisions/{revision}?format=bundle"
                 zip_folder_prefix = "sharedflowbundle/policies/"
@@ -425,8 +443,8 @@ class ApigeeOrganizationCleaner():
             attachment_obj = next((a for a in attachments if a["environment"] == env_name), None)
             if attachment_obj:
                 url = f"{base_url}/{inst_name}/attachments/{attachment_obj["name"]}"
-                self.api_delete(url, f"Attachment env: {env_name} to instance: {inst_name}")
-                self.wait_for_env_detach(env_name, inst_name)
+                #self.api_delete(url, f"Attachment env: {env_name} to instance: {inst_name}") # --------- PROTECTION ----------
+                #self.wait_for_env_detach(env_name, inst_name)
 
     def wait_for_env_detach(self, env_name, instance_name, timeout=300):
         start_time = time.time()

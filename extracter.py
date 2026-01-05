@@ -111,7 +111,7 @@ class ExtracterApigeeResources():
                     list_sharedflow = self.get_sharedflows(url)
                     revision_dependency["sharedflow"] = list_sharedflow
                     revision_dependency["enviroment"] = revision["environment"]
-                    record["revisions"][f"{revision["revision"]}"] = revision_dependency
+                    record["revisions"][f"{revision["revision"]}|{revision["environment"]}"] = revision_dependency
             record["kvms"] = self.get_kvms_proxy(proxy["name"])
             response.append(record)
         print(f"Total proxy extracted: {len(response)}")
@@ -140,9 +140,9 @@ class ExtracterApigeeResources():
             revisions = self.get_sharedflow_deployments(sharedflow["name"])
             for revision in revisions:
                 numberRevision = revision["revision"]
-                record["revisions"][f"{numberRevision}"] = {}
-                record["revisions"][f"{numberRevision}"]["environment"] = revision["environment"]
-                record["revisions"][f"{numberRevision}"]["proxy"] = [] 
+                record["revisions"][f"{numberRevision}|{revision["environment"]}"] = {}
+                record["revisions"][f"{numberRevision}|{revision["environment"]}"]["environment"] = revision["environment"]
+                record["revisions"][f"{numberRevision}|{revision["environment"]}"]["proxy"] = [] 
             sharedflows.append(record)
         print(f"Total sharedflow extracted: {len(sharedflows)}")
         print("sharedflow was done")
@@ -278,13 +278,13 @@ class ExtracterApigeeResources():
         return structure 
 if __name__ == "__main__":
    start = time.time()
-   extracter = ExtracterApigeeResources(organization="sturdy-gate-482111-f9")
-   print("Starting extraction...")
-   data1 = extracter.build_hierarchy("hierarchy.json")
+#    extracter = ExtracterApigeeResources(organization="sturdy-gate-482111-f9")
+#    print("Starting extraction...")
+#    data1 = extracter.build_hierarchy("hierarchy.json")
 
    # Temporary access to hierarchy.json
-#    with open("hierarchy.json", "r") as jsonFile:
-    #    data1 = json.load(jsonFile)
+   with open("hierarchy.json", "r") as jsonFile:
+       data1 = json.load(jsonFile)
 
    parser = CSVParser()
    data2 = parser.parse("resources.txt")

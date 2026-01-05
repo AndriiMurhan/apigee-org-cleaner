@@ -1,5 +1,7 @@
 import csv
 
+# TO-DO: Improve parsing technology
+
 class CSVParser:
     def parse(self, path):
         with open(path, mode ='r', newline='') as file:
