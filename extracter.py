@@ -185,7 +185,6 @@ class ExtracterApigeeResources():
                 for apiproduct in app["credentials"][0]['apiProducts']:
                     apiproducts.append(apiproduct['apiproduct'])
             record["apiproduct"] = apiproducts
-            record["key"] = app["credentials"][0]["consumerKey"]
             new_format_apps.append(record)
         print(f"Total apps extracted: {len(new_format_apps)}")
         print("apps was done")
@@ -214,7 +213,7 @@ class ExtracterApigeeResources():
             response_flowhook = self.request.get(f"{self.main_url}{self.organization}/environments/{env}/flowhooks/{flowhook}").json()
             fh["name"] = flowhook
             fh["sharedflow"] = ""
-            if "sharedflow" in response_flowhook:
+            if "sharedFlow" in response_flowhook:
                 fh["sharedflow"] = response_flowhook["sharedFlow"] 
             flowhooks.append(fh)
         return flowhooks
@@ -279,13 +278,13 @@ class ExtracterApigeeResources():
         return structure 
 if __name__ == "__main__":
    start = time.time()
-   #extracter = ExtracterApigeeResources(organization="sturdy-gate-482111-f9")
-   #print("Starting extraction...")
-   #data1 = extracter.build_hierarchy("hierarchy.json")
+   extracter = ExtracterApigeeResources(organization="sturdy-gate-482111-f9")
+   print("Starting extraction...")
+   data1 = extracter.build_hierarchy("hierarchy.json")
 
    # Temporary access to hierarchy.json
-   with open("hierarchy.json", "r") as jsonFile:
-       data1 = json.load(jsonFile)
+#    with open("hierarchy.json", "r") as jsonFile:
+    #    data1 = json.load(jsonFile)
 
    parser = CSVParser()
    data2 = parser.parse("resources.txt")
