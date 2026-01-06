@@ -474,6 +474,158 @@ class ApigeeOrganizationCleaner():
         self.log(f"Timeout waiting for env detach: {env_name}")
         return False
 
+    # --- CUSTOM REPORTS ---
+    def delete_custom_reports(self):
+        self.log("--- Processing CUSTOM REPORTS ---")
+        url = f"{self.main_url}/reports"
+        response = self.request.get(url)
+
+        reports = response.json().get("qualifier", [])
+        for report in reports:
+            report_name = report.get("name")
+            url = f"{self.main_url}/reports/{report_name}"
+            self.api_delete(url, f"Custom report {report_name}") # --- PROTECTION ---
+    
+    # --- DATA COLLECTORS ---
+    def delete_data_collectors(self):
+        self.log("--- Processing DATA COLLECTORS ---")
+        url = f"{self.main_url}/datacollectors"
+        response = self.request.get(url)
+        datacollectors = response.json().get("dataCollectors", [])
+
+        if len(datacollectors) < 1:
+            return # TO-DO: CHECK OTHER FUNCTION FOR NEED IN THIS CONDITIONs
+
+        safe_data_collectors = self.find_data_collectors_used_in_proxies_and_sharedflow()
+        
+        for dc in datacollectors:
+            dc_name = dc["name"]
+            if dc_name in safe_data_collectors:
+                self.log(f"Datacollector: {dc_name} has active proxies. Skipping.")
+                continue
+            
+            url = f"{self.main_url}/datacollectors/{dc_name}"
+            self.api_delete(url, f"Datacollector {dc_name}") # --- PROTECTION ---
+
+    def find_data_collectors_used_in_proxies_and_sharedflow(self):
+        used_dcs = set()
+        
+        proxies = self.hierarchy.get("proxy", [])
+        self.log(f"Starting DataCollector analysis for {len(proxies)} proxies...")
+        
+        for proxy in proxies:
+            proxy_name = proxy["name"]
+            revisions = proxy.get("revisions", {})
+            
+            for revision in list(revisions.keys()):
+                revision = revision.split("|")[0]
+                self.log(f"Checking Proxy {proxy_name} revision {revision}...") 
+                url = f"{self.main_url}/apis/{proxy_name}/revisions/{revision}?format=bundle"
+                zip_folder_prefix = "apiproxy/policies/"
+                
+                self.scan_bundle_for_datacollector(url, zip_folder_prefix, used_dcs, f"Proxy {proxy_name}")
+
+        sharedflows = self.hierarchy.get("sharedflow", [])
+        self.log(f"Starting DataCollector analysis for {len(sharedflows)} shared flows...")
+        
+        for sf in sharedflows:
+            sf_name = sf["name"]
+            revisions = sf.get("revisions", {})
+            
+            for revision in list(revisions.keys()):
+                revision = revision.split("|")[0]
+                self.log(f"Checking sharedflow {sf_name} revision {revision}...") 
+                url = f"{self.main_url}/sharedflows/{sf_name}/revisions/{revision}?format=bundle"
+                zip_folder_prefix = "sharedflowbundle/policies/"
+                
+                self.scan_bundle_for_datacollector(url, zip_folder_prefix, used_dcs, f"SharedFlow {sf_name}")
+
+        self.log(f"Found {len(used_dcs)} unique DataCollectors used in code: {used_dcs}")
+        return used_dcs
+    
+    def scan_bundle_for_datacollector(self, url, folder_prefix, used_dcs_set, context_name):
+        try:
+            response = self.request.get(url)
+            response.raise_for_status()
+
+            with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+                for filename in z.namelist():
+                    if filename.startswith(folder_prefix) and filename.endswith(".xml"):
+                        with z.open(filename) as policy_file:
+                            try:
+                                self.parse_policy_for_datacollector(policy_file, used_dcs_set)
+                            except ET.ParseError:
+                                self.log(f"⚠️ Error parsing XML in {context_name}: {filename}")
+        
+        except requests.exceptions.RequestException as e:
+            self.log(f"Failed to download bundle for {context_name}: {e}")
+        except zipfile.BadZipFile:
+            self.log(f"Invalid ZIP file received for {context_name}")
+
+    def parse_policy_for_datacollector(self, policy_file, used_dcs_set):
+        try:
+            tree = ET.parse(policy_file)
+            root = tree.getroot()
+
+            if root.tag == "DataCapture":
+                for capture in root.findall("Capture"):
+                    dc_elem = capture.find("DataCollector")
+                    
+                    if dc_elem is not None and dc_elem.text:
+                        dc_name = dc_elem.text.strip()
+                        if dc_name:
+                            used_dcs_set.add(dc_name)
+                            
+        except Exception:
+            pass
+
+    # --- ENV GROUPS ---
+    def delete_env_groups(self):
+        self.log("--- Processing ENV GROUPS ---")
+        url = f"{self.main_url}/envgroups"
+        response = self.request.get(url)
+
+        env_groups = response.json().get("environmentGroups", [])
+        for env_group in env_groups:
+            # Check for attached env
+            if not self.is_env_group_empty(env_group):
+                self.log(f"Skipping Env Group {env_group["name"]}: not empty.")
+                continue
+            
+            url = f"{self.main_url}/envgroups/{env_group["name"]}"
+            self.api_delete(url, f"Env Group {env_group["name"]}") # --- PROTECTION ---
+            
+    def is_env_group_empty(self, env_group: object):
+        url = f"{self.main_url}/envgroups/{env_group["name"]}/attachments"
+        response = self.request.get(url)
+        env_att = response.json().get("environmentGroupAttachments", [])
+        return len(env_att) < 0
+    
+    # --- INSTANCES ---
+    def delete_instances(self):
+        self.log("--- Processing INSTANCES ---")
+        url = f"{self.main_url}/instances"
+        response = self.request.get(url)
+
+        instances = response.json().get("instances", [])
+        for inst in instances:
+            # Check if has any attachments
+            if self.has_inst_attachemnts(inst):
+                self.log(f"Skipping instance {inst["name"]}: not empty.")
+                continue
+            
+            url = f"{self.main_url}/instances/{inst["name"]}"
+            self.api_delete(url, f"Instance {inst["name"]}")
+
+    def has_inst_attachemnts(self, instance: object):
+        url = f"{self.main_url}/instances/{instance["name"]}/attachments"
+        response = self.request.get(url)
+
+        inst_atts = response.json().get("attachments", [])
+        return len(inst_atts) > 0
+      
+    # TO-DO: CONSIDER MULTIPLE PAGES RESPONSE IN SOME CALLS
+
     def clean(self):
         self.delete_proxies()
         self.delete_sharedflows()
@@ -481,8 +633,11 @@ class ApigeeOrganizationCleaner():
         self.delete_developer_and_apps()
         self.delete_kvms()
         self.delete_environments()
-
-        # TO-DO: portals, custom reports, instances, data collectors, env-group cleanup
+        self.delete_custom_reports()
+        self.delete_data_collectors()
+        self.delete_env_groups()
+        self.delete_instances()
+        
 
         with open("cleaner_output.json", "w") as file:
             json.dump(self.hierarchy, file, indent=4)

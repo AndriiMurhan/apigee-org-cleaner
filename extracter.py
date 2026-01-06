@@ -9,7 +9,6 @@ from request import RestRequest
 from CSVParser import CSVParser
 from cleaner import ApigeeOrganizationCleaner
 import json
-from pprint import pprint
 
 class ExtracterApigeeResources():
     def __init__(self,domain="apigee.googleapis.com", 
