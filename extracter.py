@@ -48,6 +48,7 @@ class ExtracterApigeeResources():
                     f.write(chunk)
     def get_sharedflows(self,url):
         sharedflows = []
+        policy_list = []
         self.download_file(url)
         with zipfile.ZipFile("temprorary.zip") as arhive:
             list_names = [object for object in arhive.namelist() if "apiproxy/policies/" in str(object)]
@@ -62,7 +63,7 @@ class ExtracterApigeeResources():
                                 root_element = ET.fromstring(myfile.read())
                                 for sharedflow in root_element.findall('SharedFlowBundle'): 
                                     sharedflows.append(sharedflow.text)
-        return sharedflows
+        return (sharedflows,policy_list)
     def filterpolicyBySharedflow(self, policies):
         acronyms = ["AC-","AM-","AE-",
                     "BA-","CRL-","EV-",
@@ -84,6 +85,40 @@ class ExtracterApigeeResources():
             if f"{structure_policy[0]}-" not in acronyms:
                 sharedflows.append(policy)
         return sharedflows
+    def filterpolicyByKVM(self, policies):
+        acronyms = ["AC-","AM-","AE-",
+                    "BA-","CRL-","EV-",
+                    "JS-","JC-", "JTP-", 
+                    "J2X-", "JtoX-","LDAP-",
+                    "ML-","PC-","LC-",
+                    "IC-", "SA-", 
+                    "QZ-", "VC-", "RC-",
+                    "OAuthv1-", "OAuthv2-","Python-", 
+                    "Q-", "RQ-", "RF-",
+                    "RE-", "MV-", "SAML-",
+                    "EC-", "JWT-", "JWS-",
+                    "SC-", "SA-","Stats-",
+                    "VAK-", "XMLTP-", "X2J-",
+                    "XSL-", "FC-"] # filtering all known convient names of policy expect FC and others unknown))
+        sharedflows = []
+        for policy in policies:
+            structure_policy = str(policy).split("-")
+            if f"{structure_policy[0]}-" not in acronyms:
+                sharedflows.append(policy)
+        return sharedflows
+    def get_kvm_dependency(self,policy_list):
+        kvm = []
+        if len(policy_list) > 0: 
+            with zipfile.ZipFile("temprorary.zip") as archive:
+                flowcallout_list = self.filterpolicyByKVM(policy_list)
+                if len(flowcallout_list) > 0:
+                    for flowcallout in flowcallout_list:
+                            with archive.open("apiproxy/policies/"+flowcallout) as myfile:
+                                root_element = ET.fromstring(myfile.read())
+                                name_kvm = root_element.get("mapIdentifier")
+                                if name_kvm is not None and name_kvm not in kvm:
+                                    kvm.append(name_kvm)
+        return kvm
     def get_proxies(self,includeRevisions=False,includeMetaData=False):
         response = []
         list_all_names_proxy = json.loads(self.request.get(f"{self.main_url}{self.organization}/apis?includeRevisions={includeRevisions}&includeMetaData={includeMetaData}").text)["proxies"] 
@@ -102,11 +137,13 @@ class ExtracterApigeeResources():
                 for revision in revisions:
                     revision_dependency = {}
                     url = f"{self.main_url}{self.organization}/apis/{proxy["name"]}/revisions/{revision["revision"]}?format=bundle"
-                    list_sharedflow = self.get_sharedflows(url)
+                    (list_sharedflow, policy) = self.get_sharedflows(url)
+                    list_kvms_dependency = self.get_kvm_dependency(policy)
+                    revision_dependency["kvms_dependency"] = list_kvms_dependency
                     revision_dependency["sharedflow"] = list_sharedflow
                     revision_dependency["enviroment"] = revision["environment"]
                     record["revisions"][f"{revision["revision"]}"] = revision_dependency
-            record["kvms"] = self.get_kvms_proxy(proxy["name"])
+            record["kvms_proxy_scope"] = self.get_kvms_proxy(proxy["name"])
             response.append(record)
         print(f"Total proxy extracted: {len(response)}")
         print("proxy was done")
@@ -115,11 +152,19 @@ class ExtracterApigeeResources():
         response = self.request.get(f"{self.main_url}{self.organization}")
         return response.json()
     def get_kvms_organization(self):
+        kvms = []
         response = self.request.get(f"{self.main_url}{self.organization}/keyvaluemaps")
-        return response.json()
+        for kvm in response.json():
+            record = {"name": kvm, "proxies": []}
+            kvms.append(record)
+        return kvms
     def get_kvms_environment(self, environment):
+        kvms = []
         response = self.request.get(f"{self.main_url}{self.organization}/environments/{environment}/keyvaluemaps")
-        return response.json()
+        for kvm in response.json():
+            record = {"name": kvm, "proxies": []}
+            kvms.append(record)
+        return kvms
     def get_kvms_proxy(self, proxy):
         response = self.request.get(f"{self.main_url}{self.organization}/apis/{proxy}/keyvaluemaps")
         return response.json()
@@ -164,7 +209,7 @@ class ExtracterApigeeResources():
             if "proxies" in details_apiproduct:
                 apiproduct["proxy"] = details_apiproduct["proxies"]
         print(f"Total apiproducts extracted: {len(apiproducts)}")
-        print("sharedflow was done")
+        print("apiproduct was done")
         return apiproducts
     def get_apps(self):
         response = self.request.get(f"{self.main_url}{self.organization}/apps?expand=true")
@@ -231,6 +276,23 @@ class ExtracterApigeeResources():
         structure["app"] = self.get_apps()
         structure["developers"] = self.get_developers()
         print("Start collecting dependencies...")
+        for kvm in structure["organization_kvm"]: # find dependency between kvms organization,environment scope and proxy
+            for proxy in structure["proxy"]:
+                for key,value in proxy["revisions"].items():
+                    if "kvms_dependency" in value:
+                        for KVM in value["kvms_dependency"]:
+                            if kvm["name"] == KVM:
+                                if proxy["name"] not in kvm["proxies"]:
+                                    kvm["proxies"].append(proxy["name"])
+        for record in structure["environments"]: # find dependency between kvms environment scope and proxy
+            for kvm in record["kvm"]:
+                for proxy in structure["proxy"]:
+                    for key,value in proxy["revisions"].items():
+                        if "kvms_dependency" in value:
+                            for KVM in value["kvms_dependency"]:
+                                if kvm["name"] == KVM:
+                                    if proxy["name"] not in kvm["proxies"]:
+                                        kvm["proxies"].append(proxy["name"])
         for environment in structure["environments"]: # find dependency between environment and proxy
             for proxy in structure["proxy"]:
                 for key,value in proxy["revisions"].items():
