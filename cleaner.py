@@ -25,8 +25,8 @@ class ApigeeOrganizationCleaner():
         print(f"[{current_time}] {class_name} - {message}")
 
     def api_delete(self, url, resource_name):
-        self.log(f"Successfully deleted: {resource_name}")
-        return True # --- PROTECTION -------------------------------
+        # self.log(f"Successfully deleted: {resource_name}")
+        # return True # --- PROTECTION -------------------------------
 
         try:
             resp = self.request.delete(url)
@@ -74,17 +74,12 @@ class ApigeeOrganizationCleaner():
         return proxy in self.imp_proxies
 
     # --- PROXIES ---
-    # Algorithm
-    # 1. Check if proxy is in the filter list
-    #   a. If in the list then skip it
-    # 2. Iterate though revisions and undeploy every revision from its enviroment
-    # 3. When every revision is undeployed, remove proxy dependenies in the hierarchy and organization
-    # 4. Remove proxy itself from hierarchy.json and organization (DELETE Request)
     def delete_proxies(self):
         self.log("--- Processing PROXIES ---")
         
         proxies = self.hierarchy.get("proxy", [])
         for proxy in proxies[:]:
+            self.log(f"Processing proxy {proxy["name"]}...")
             if self.is_important_proxy(proxy["name"]):  
                 self.log(f"Skipping protected proxy: {proxy["name"]}")              
                 continue
@@ -97,11 +92,12 @@ class ApigeeOrganizationCleaner():
                 if env_name:
                     self.log(f"Undeploying {proxy['name']} rev {revision} from {env_name}...")
                     url = f"{self.main_url}/environments/{env_name}/apis/{proxy["name"]}/revisions/{revision}/deployments"       
-                    #self.request.delete(url) - --------------------- PROTECTION -----------------------
-                    #self.wait_for_undeploy(env_name, "apis", proxy["name"], revision)  
+                    self.request.delete(url) # - --------------------- PROTECTION -----------------------
+                    self.wait_for_undeploy(env_name, "apis", proxy["name"], revision)  
             
             self.delete_proxy_dependencies(proxy["name"])
             
+            self.log(f"Deleting proxy {proxy["name"]}...")
             url = f"{self.main_url}/apis/{proxy["name"]}"
             if self.api_delete(url,f"Proxy {proxy["name"]}"):
                 proxies.remove(proxy)
@@ -125,25 +121,18 @@ class ApigeeOrganizationCleaner():
                 apip_proxies.remove(proxy_name)
 
     # --- SHAREDFLOWS ---
-    # Algorithm
-    # 1. Check if any not deleted proxy has attached the proxy to it
-    #   a. If has than we skip it
-    # 2. Check if the sharedflow is attached to any flowhook in valid enviroments
-    #   b. If it is then iterate thought env list and detach from it
-    # 3. Undeploy sharedflow from enviremont
-    # 4. Remove all possible dependencies with other resources
-    # 5. Remove sharedFlow itself.
     def delete_sharedflows(self):
         self.log("--- Processing SHAREDFLOWS ---")
         
         sharedflows = self.hierarchy.get("sharedflow", [])
         for sharedflow in sharedflows[:]:
-            # Check if shared flow is attached to any proxy
+            self.log(f"Processing sharedflow {sharedflow["name"]}")
+
             if len(sharedflow["proxy"]) > 0:
                 self.log(f"SharedFlow {sharedflow['name']} is used by existing proxies. Skipping.")
                 continue
             
-            # Detach from FlowHooks
+            # Detach from FlowHooks            
             envs_attached = self.get_sharedflow_flowhook_attachments(sharedflow["name"])
             for env_name in envs_attached.get("envs_to_detach"):
                 self.detach_flowhook(env_name, sharedflow["name"])
@@ -161,12 +150,13 @@ class ApigeeOrganizationCleaner():
                 if env_name:
                     self.log(f"Undeploying SharedFlow {sharedflow['name']} rev {revision} from {env_name}")
                     url = f"{self.main_url}/environments/{env_name}/sharedflows/{sharedflow['name']}/revisions/{revision}/deployments"
-                    #self.request.delete(url) # -------------------- PROTECTION -----------------------
-                    #self.wait_for_undeploy(env_name, "sharedflows", sharedflow["name"], revision, 120)  
+                    self.request.delete(url) # -------------------- PROTECTION -----------------------
+                    self.wait_for_undeploy(env_name, "sharedflows", sharedflow["name"], revision, 120)  
 
             # Check and delete all posible sharedFlow dependencies
             self.delete_shareflow_dependencies(sharedflow)
 
+            self.log(f"Deleting sharedflow {sharedflow["name"]}")
             url = f"{self.main_url}/sharedflows/{sharedflow['name']}"
             if self.api_delete(url, f"SharedFlow {sharedflow["name"]}"):
                 sharedflows.remove(sharedflow)
@@ -182,10 +172,11 @@ class ApigeeOrganizationCleaner():
             
             if hook_in_json and hook_in_json.get("sharedflow") == sf_name:
                 url = f"{self.main_url}/environments/{env_name}/flowhooks/{hook_name}"
-                #self.request.delete(url) # -------------------- PROTECTION -----------------------
+                self.request.delete(url) # -------------------- PROTECTION -----------------------
                 hook_in_json["sharedflow"] = ""
 
     def get_sharedflow_flowhook_attachments(self, sf_name: str) -> object:
+        self.log(f"Checking FlowHook attachments for SharedFlow {sf_name}...")
         env_to_detach = []
         is_blocking_deletion = False
 
@@ -208,40 +199,35 @@ class ApigeeOrganizationCleaner():
         return {"can_delete": not is_blocking_deletion, "envs_to_detach": list(set(env_to_detach))}
 
     def delete_shareflow_dependencies(self, sharedflow: object):
+        self.log(f"Deleting dependencies of SharedFlow {sharedflow['name']}...")
         for env in self.hierarchy["environments"]:
             env_sharedflows = env["sharedflow"]
             if sharedflow["name"] in env_sharedflows:
                 env_sharedflows.remove(sharedflow["name"])
 
-
     # --- API PRODUCTS ---
-    # Algorithm
-    # Before iteration clean apiproducts from non existing proxies.
-    # 1. Check if api product has any attached proxy to it
-    #   a. If true then we skip this product
-    # 2. Iterate though the list of apps that attached to this product
-    # 3. Remove dependency from the apps and current api product
-    # 4. Remove api product itself
     def delete_api_products(self):
         self.log("--- Processing API PRODUCTS ---")
         self.api_products_clean_up()
 
         apiproducts = self.hierarchy.get("apiproduct")
         for apip in apiproducts[:]:
+            self.log(f"Processing API Product {apip["name"]}...")
             if len(apip["proxy"]) > 0:
                 self.log(f"API product: {apip["name"]} has active proxies. Skipping.")
                 continue
             
+            self.log(f"Detaching API Product {apip["name"]} from Apps...")
             apps_using = apip.get("app", [])
             for app_name in apps_using:
                 self.detach_product_from_app(app_name, apip["name"])
 
+            self.log(f"Deleting API Product {apip["name"]}...")
             url = f"{self.main_url}/apiproducts/{apip["name"]}"
             if self.api_delete(url, f"API Product {apip["name"]}"):
                 apiproducts.remove(apip)
 
     def detach_product_from_app(self, app_name, product_name):
-        # Helper to find dev and remove key association
         app_obj = next((a for a in self.hierarchy["app"] if a["name"] == app_name), None)
         if not app_obj: return
 
@@ -259,7 +245,7 @@ class ApigeeOrganizationCleaner():
             is_product_exits = any(apip.get("apiproduct") == product_name for apip in cred_products)
             if is_product_exits:
                 url = f"{self.main_url}/developers/{dev_email}/apps/{app_name}/keys/{consKey}/apiproducts/{product_name}"
-                #self.request.delete(url)  #--- PROTECTION -------------------------
+                self.request.delete(url)  #--- PROTECTION -------------------------
             
         # Clean JSON
         if product_name in app_obj["apiproduct"]:
@@ -270,20 +256,14 @@ class ApigeeOrganizationCleaner():
         for apip in self.hierarchy["apiproduct"]:
             apip["proxy"] = [p for p in apip["proxy"] if p in existing_proxy_names]
 
-
-    # -- DEVELOPERS AND APPS ---
-    # 1. Check if developer has apps
-    #   a. If false, the safely delete this developer
-    # 2. Else iterate though developer's apps
-    # 3. Match apps with existing apps
-    # 4. If The app doesn't have any api product, then remove it from dev list and itself
-    # 5. If developer was left with no apps, then remove the developer
+    # --- DEVELOPERS AND APPS
     def delete_developer_and_apps(self):
         self.log("--- Processing DEVS & APPS ---")
         
         developers = self.hierarchy.get("developers", [])
         for dev in developers[:]:
-            # Check if dev has any apps
+            self.log(f"Processing Developer {dev['email']}...")
+
             dev_apps = dev.get("app", [])
             for app_name in dev_apps[:]:
                 full_app = next((a for a in self.hierarchy["app"] if a["name"] == app_name), None)
@@ -297,15 +277,12 @@ class ApigeeOrganizationCleaner():
                             self.hierarchy["app"].remove(full_app)
 
                 if len(dev_apps) < 1:
+                    self.log(f"Deleting Developer {dev['email']} (no apps)")
                     url = f"{self.main_url}/developers/{dev["email"]}"
                     if self.api_delete(url, f"Developer {dev["email"]}"):
                         developers.remove(dev)
 
     # --- KEY VALUE MAPS ---
-    # Algorithm
-    # 1. According to left proxies, get all the kvm that they use
-    # 2. Iterate though org_kvm and remove kvms that are not in the safe list
-    # 3. Iterate though env_kvm and remove kvms that are not in the safe list
     def delete_kvms(self):
         self.log("--- Processing KVMs ---")
         safe_kvms = self.find_kvms_used_in_proxies_and_sharedflows()
@@ -314,6 +291,7 @@ class ApigeeOrganizationCleaner():
         org_kvm = self.hierarchy["organization_kvm"]
         for kvm in org_kvm[:]:
             if kvm not in safe_kvms:
+                self.log(f"Deleting Org KVM {kvm}...")
                 url = f"{self.main_url}/keyvaluemaps/{kvm}"
                 if self.api_delete(url, f"Org KVM {kvm}"):
                     org_kvm.remove(kvm)
@@ -324,11 +302,13 @@ class ApigeeOrganizationCleaner():
             env_kvm = env["kvm"]
             for kvm in env_kvm[:]:
                 if kvm not in safe_kvms:
+                    self.log(f"Deleting Env KVM {kvm} in {env['name']}...")
                     url = f"{self.main_url}/environments/{env['name']}/keyvaluemaps/{kvm}"
                     if self.api_delete(url, f"Env KVM {kvm} in {env["name"]}"):
                         env_kvm.remove(kvm)
 
     def find_kvms_used_in_proxies_and_sharedflows(self):
+        self.log("Scanning for KVM usage in Proxies and SharedFlows...")
         used_kvms = set()
         proxies = self.hierarchy["proxy"]
         
@@ -347,7 +327,6 @@ class ApigeeOrganizationCleaner():
 
         sharedflows = self.hierarchy.get("sharedflow", [])
         self.log(f"Starting static analysis of {len(sharedflows)} sharedflows...")
-
         for sf in sharedflows:
             sf_name = sf["name"]            
             revisions = sf.get("revisions", {})
@@ -402,20 +381,15 @@ class ApigeeOrganizationCleaner():
                     
         except Exception as e:
             pass
-
+    
     # --- ENVIRONMENTS ---
-    # Algorithm
-    # 1. Check if env has any proxies
-    # 2. Check if env has any sharedFlows
-    # 3. Check for kvms
-    # 4. If env is blank then delete it
-    # ------------------------ 
     def delete_environments(self):
         self.log("--- Processing ENVIRONMENTS ---")
         
         envs = self.hierarchy["environments"]
         for env in envs[:]:
-            # Check if env has any proxies or sharedflows
+            self.log(f"Processing Env {env["name"]}...")
+
             has_proxies = len(env["proxy"]) > 0
             has_sharedflows = len(env["sharedflow"]) > 0 
             if has_proxies or has_sharedflows:
@@ -424,48 +398,50 @@ class ApigeeOrganizationCleaner():
             
             self.detach_from_instances(env["name"])
 
+            self.log(f"Deleting Env {env["name"]}...")
             url = f"{self.main_url}/environments/{env["name"]}"
             if self.api_delete(url, f"Environment {env["name"]}"):
                 envs.remove(env)
     
     def detach_from_instances(self, env_name):
-        base_url = f"{self.main_url}/instances"
-        response = self.request.get(base_url)
+        self.log(f"Detaching Env {env_name} from Instances...")
+        url = f"{self.main_url}/instances?pageSize=100"
+        response = self.request.get(url)
         instances = response.json().get("instances", [])
 
         for instance in instances:
             inst_name = instance["name"]
-            url = f"{base_url}/{inst_name}/attachments"
+            url = f"{self.main_url}/instances/{inst_name}/attachments?pageSize=100"
             response = self.request.get(url)
-
             attachments = response.json().get("attachments", [])
-
             attachment_obj = next((a for a in attachments if a["environment"] == env_name), None)
             if attachment_obj:
-                url = f"{base_url}/{inst_name}/attachments/{attachment_obj["name"]}"
-                #self.api_delete(url, f"Attachment env: {env_name} to instance: {inst_name}") # --------- PROTECTION ----------
-                #self.wait_for_env_detach(env_name, inst_name)
+                self.log(f"Detaching Env {env_name} from Instance {inst_name}...")
+                url = f"{self.main_url}/instances/{inst_name}/attachments/{attachment_obj["name"]}"
+                resp = self.request.delete(url) # --------- PROTECTION ----------
+                operation_name = resp.json().get("name")
+                if self.wait_for_env_detach(env_name, inst_name, operation_name):
+                    self.log(f"Succesfully deleted: Attachment env: {env_name} to instance: {inst_name}")
 
-    def wait_for_env_detach(self, env_name, instance_name, timeout=300):
+    def wait_for_env_detach(self, env_name, instance_name, operation_name, timeout=600):
         start_time = time.time()
         self.log(f"Waiting for environment '{env_name}' to detach from instance '{instance_name}'...")
 
-        url = f"{self.main_url}/instances/{instance_name}/attachments"
-
+        url = f"https://{self.domain}/v1/{operation_name}"
         while time.time() - start_time < timeout:
             try:
                 response = self.request.get(url)
-
                 if response.status_code == 200:
-                    attachments = response.json().get("attachments", [])
-
-                    is_still_attached = any(att.get("environment") == env_name for att in attachments)
-                    if not is_still_attached:
-                        self.log(f"Environment '{env_name}' detached successfully.")
+                    data = response.json()
+                    if data.get("done") is True:
+                        if "error" in data:
+                            self.log(f"Operation failed: {data["error"]}")
+                            return False
+                        
+                        self.log(f"Operation completed. Environment '{env_name}' detached successfully.")
                         return True
                 else:
-                    self.log(f"Unexpected status checking attachments: {response.status_code}")
-
+                    self.log(f"Error checking operation status: {response.status_code}")
             except Exception as e:
                 self.log(f"Error checking attachment: {e}")
             
@@ -473,7 +449,7 @@ class ApigeeOrganizationCleaner():
         
         self.log(f"Timeout waiting for env detach: {env_name}")
         return False
-
+        
     # --- CUSTOM REPORTS ---
     def delete_custom_reports(self):
         self.log("--- Processing CUSTOM REPORTS ---")
@@ -482,24 +458,28 @@ class ApigeeOrganizationCleaner():
 
         reports = response.json().get("qualifier", [])
         for report in reports:
-            report_name = report.get("name")
+            report_name = report.get("name") 
+            self.log(f"Processing Custom Report {report_name}...")
+            self.log(f"Deleting Custom Report {report_name}...")
             url = f"{self.main_url}/reports/{report_name}"
             self.api_delete(url, f"Custom report {report_name}") # --- PROTECTION ---
     
     # --- DATA COLLECTORS ---
     def delete_data_collectors(self):
         self.log("--- Processing DATA COLLECTORS ---")
-        url = f"{self.main_url}/datacollectors"
+        
+        url = f"{self.main_url}/datacollectors?pageSize=100"
         response = self.request.get(url)
         datacollectors = response.json().get("dataCollectors", [])
 
         if len(datacollectors) < 1:
-            return # TO-DO: CHECK OTHER FUNCTION FOR NEED IN THIS CONDITIONs
+            return
 
         safe_data_collectors = self.find_data_collectors_used_in_proxies_and_sharedflow()
         
         for dc in datacollectors:
             dc_name = dc["name"]
+            self.log(f"Processing DataCollector {dc_name}...")
             if dc_name in safe_data_collectors:
                 self.log(f"Datacollector: {dc_name} has active proxies. Skipping.")
                 continue
@@ -508,8 +488,9 @@ class ApigeeOrganizationCleaner():
             self.api_delete(url, f"Datacollector {dc_name}") # --- PROTECTION ---
 
     def find_data_collectors_used_in_proxies_and_sharedflow(self):
+        self.log("Scanning for DataCollector usage in Proxies and SharedFlows...")
+
         used_dcs = set()
-        
         proxies = self.hierarchy.get("proxy", [])
         self.log(f"Starting DataCollector analysis for {len(proxies)} proxies...")
         
@@ -582,16 +563,17 @@ class ApigeeOrganizationCleaner():
     # --- ENV GROUPS ---
     def delete_env_groups(self):
         self.log("--- Processing ENV GROUPS ---")
-        url = f"{self.main_url}/envgroups"
+        url = f"{self.main_url}/envgroups?pageSize=100"
         response = self.request.get(url)
 
         env_groups = response.json().get("environmentGroups", [])
         for env_group in env_groups:
-            # Check for attached env
+            self.log(f"Processing Env Group {env_group["name"]}...")
             if not self.is_env_group_empty(env_group):
                 self.log(f"Skipping Env Group {env_group["name"]}: not empty.")
                 continue
             
+            self.log(f"Deleting Env Group {env_group["name"]}...")
             url = f"{self.main_url}/envgroups/{env_group["name"]}"
             self.api_delete(url, f"Env Group {env_group["name"]}") # --- PROTECTION ---
             
@@ -599,7 +581,7 @@ class ApigeeOrganizationCleaner():
         url = f"{self.main_url}/envgroups/{env_group["name"]}/attachments"
         response = self.request.get(url)
         env_att = response.json().get("environmentGroupAttachments", [])
-        return len(env_att) < 0
+        return len(env_att) < 1
     
     # --- INSTANCES ---
     def delete_instances(self):
@@ -609,11 +591,14 @@ class ApigeeOrganizationCleaner():
 
         instances = response.json().get("instances", [])
         for inst in instances:
+            self.log(f"Processing Instance {inst["name"]}...")
+
             # Check if has any attachments
             if self.has_inst_attachemnts(inst):
                 self.log(f"Skipping instance {inst["name"]}: not empty.")
                 continue
             
+            self.log(f"Deleting Instance {inst["name"]}...")
             url = f"{self.main_url}/instances/{inst["name"]}"
             self.api_delete(url, f"Instance {inst["name"]}")
 
