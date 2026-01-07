@@ -180,10 +180,13 @@ class ExtracterApigeeResources():
             record = {}
             record["name"] = app["name"]
             apiproducts = []
-            if 'apiProducts' in app["credentials"][0]:
-                for apiproduct in app["credentials"][0]['apiProducts']:
-                    apiproducts.append(apiproduct['apiproduct'])
-            record["apiproduct"] = apiproducts
+            credentials = app.get("credentials", [])
+            for cred in credentials: 
+                cred_apiproducts = cred.get("apiProducts", [])
+                if len(cred_apiproducts) > 0:
+                    for apiproduct in cred_apiproducts:
+                        apiproducts.append(apiproduct['apiproduct'])
+            record["apiproduct"] = list(set(apiproducts))
             new_format_apps.append(record)
         print(f"Total apps extracted: {len(new_format_apps)}")
         print("apps was done")

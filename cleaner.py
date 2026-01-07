@@ -25,8 +25,8 @@ class ApigeeOrganizationCleaner():
         print(f"[{current_time}] {class_name} - {message}")
 
     def api_delete(self, url, resource_name):
-        # self.log(f"Successfully deleted: {resource_name}")
-        # return True # --- PROTECTION -------------------------------
+        self.log(f"Successfully deleted: {resource_name}")
+        return True # --- PROTECTION -------------------------------
 
         try:
             resp = self.request.delete(url)
@@ -92,8 +92,8 @@ class ApigeeOrganizationCleaner():
                 if env_name:
                     self.log(f"Undeploying {proxy['name']} rev {revision} from {env_name}...")
                     url = f"{self.main_url}/environments/{env_name}/apis/{proxy["name"]}/revisions/{revision}/deployments"       
-                    self.request.delete(url) # - --------------------- PROTECTION -----------------------
-                    self.wait_for_undeploy(env_name, "apis", proxy["name"], revision)  
+                    # self.request.delete(url) # - --------------------- PROTECTION -----------------------
+                    # self.wait_for_undeploy(env_name, "apis", proxy["name"], revision)  
             
             self.delete_proxy_dependencies(proxy["name"])
             
@@ -150,8 +150,8 @@ class ApigeeOrganizationCleaner():
                 if env_name:
                     self.log(f"Undeploying SharedFlow {sharedflow['name']} rev {revision} from {env_name}")
                     url = f"{self.main_url}/environments/{env_name}/sharedflows/{sharedflow['name']}/revisions/{revision}/deployments"
-                    self.request.delete(url) # -------------------- PROTECTION -----------------------
-                    self.wait_for_undeploy(env_name, "sharedflows", sharedflow["name"], revision, 120)  
+                    # self.request.delete(url) # -------------------- PROTECTION -----------------------
+                    # self.wait_for_undeploy(env_name, "sharedflows", sharedflow["name"], revision, 120)  
 
             # Check and delete all posible sharedFlow dependencies
             self.delete_shareflow_dependencies(sharedflow)
@@ -172,7 +172,7 @@ class ApigeeOrganizationCleaner():
             
             if hook_in_json and hook_in_json.get("sharedflow") == sf_name:
                 url = f"{self.main_url}/environments/{env_name}/flowhooks/{hook_name}"
-                self.request.delete(url) # -------------------- PROTECTION -----------------------
+                # self.request.delete(url) # -------------------- PROTECTION -----------------------
                 hook_in_json["sharedflow"] = ""
 
     def get_sharedflow_flowhook_attachments(self, sf_name: str) -> object:
@@ -245,7 +245,7 @@ class ApigeeOrganizationCleaner():
             is_product_exits = any(apip.get("apiproduct") == product_name for apip in cred_products)
             if is_product_exits:
                 url = f"{self.main_url}/developers/{dev_email}/apps/{app_name}/keys/{consKey}/apiproducts/{product_name}"
-                self.request.delete(url)  #--- PROTECTION -------------------------
+                # self.request.delete(url)  #--- PROTECTION -------------------------
             
         # Clean JSON
         if product_name in app_obj["apiproduct"]:
@@ -418,10 +418,10 @@ class ApigeeOrganizationCleaner():
             if attachment_obj:
                 self.log(f"Detaching Env {env_name} from Instance {inst_name}...")
                 url = f"{self.main_url}/instances/{inst_name}/attachments/{attachment_obj["name"]}"
-                resp = self.request.delete(url) # --------- PROTECTION ----------
-                operation_name = resp.json().get("name")
-                if self.wait_for_env_detach(env_name, inst_name, operation_name):
-                    self.log(f"Succesfully deleted: Attachment env: {env_name} to instance: {inst_name}")
+                # resp = self.request.delete(url) # --------- PROTECTION ----------
+                # operation_name = resp.json().get("name")
+                # if self.wait_for_env_detach(env_name, inst_name, operation_name):
+                    # self.log(f"Succesfully deleted: Attachment env: {env_name} to instance: {inst_name}")
 
     def wait_for_env_detach(self, env_name, instance_name, operation_name, timeout=600):
         start_time = time.time()
