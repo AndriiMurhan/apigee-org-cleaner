@@ -35,7 +35,7 @@ class BundleAnalyzer:
         
         return list_callback
     
-    def parse_policy_for_kvm(self, policy_file: str, used_kvms_set: set) -> None:
+    def parse_policy_for_kvm(self, policy_file: str, used_kvms_set: set):
         try:
             tree = ET.parse(policy_file)
             root = tree.getroot()
@@ -55,7 +55,7 @@ class BundleAnalyzer:
         except Exception as e:
             self.logger.log(f"Error parsing KVM policy: {e}")
     
-    def parse_policy_for_datacollector(self, policy_file: str, used_dcs_set: set) -> None:
+    def parse_policy_for_datacollector(self, policy_file: str, used_dcs_set: set):
         try:
             tree = ET.parse(policy_file)
             root = tree.getroot()

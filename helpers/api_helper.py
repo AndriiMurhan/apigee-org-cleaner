@@ -35,7 +35,7 @@ class APIHelper:
         while time.time() - start_time < timeout:
             try:
                 response = self.request.delete(url)
-                self.logger.log(f"[DEBUG] response: {response.json()}")
+                # self.logger.log(f"[DEBUG] response: {response.json()}")
                 
                 if response.status_code == 404:
                     self.logger.log(f"{name} undeployed successfully")
@@ -70,7 +70,7 @@ class APIHelper:
                             self.logger.log(f"Operation failed: {data["error"]}")
                             return False
                         
-                        self.logger.log(f"Operation {operation_name} completed successfully.")
+                        self.logger.log(f"Operation completed successfully.")
                         return True
                 else:
                     self.logger.log(f"Error checking operation status: {response.status_code}")
@@ -79,5 +79,5 @@ class APIHelper:
             
             time.sleep(5)
         
-        self.logger.log(f"Timeout waiting for operation: {operation_name}.")
+        self.logger.log(f"Timeout waiting for operation.")
         return False
