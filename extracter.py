@@ -280,13 +280,13 @@ class ExtracterApigeeResources():
         return structure 
 if __name__ == "__main__":
    start = time.time()
-#    extracter = ExtracterApigeeResources(organization="sturdy-gate-482111-f9")
-#    print("Starting extraction...")
-#    data1 = extracter.build_hierarchy("hierarchy.json")
+   extracter = ExtracterApigeeResources(organization="sturdy-gate-482111-f9")
+   print("Starting extraction...")
+   data1 = extracter.build_hierarchy("hierarchy.json")
 
    # Temporary access to hierarchy.json
-   with open("hierarchy.json", "r") as jsonFile:
-       data1 = json.load(jsonFile)
+#    with open("hierarchy.json", "r") as jsonFile:
+    #    data1 = json.load(jsonFile)
 
    parser = CSVParser()
    data2 = parser.parse("resources.txt")
